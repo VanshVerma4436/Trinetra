@@ -120,33 +120,43 @@ else:
     }
 
 # 4. Security & Static Files
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
+
 if not DEBUG:
-    # Production Security
-    SECURE_SSL_REDIRECT = False # Disabled for Local Production Test
-    SESSION_COOKIE_SECURE = False # Disabled for Local HTTP
-    CSRF_COOKIE_SECURE = False # Disabled for Local HTTP
+    # --- PRODUCTION SETTINGS (AZURE) ---
     
-    # Azure/AWS Load Balancer support
+    # 1. Host Configuration
+    # We combine environment variable + hardcoded Azure URL to be safe
+    env_hosts = os.environ.get('ALLOWED_HOSTS', '').split(',')
+    ALLOWED_HOSTS = env_hosts + ['trinetra.azurewebsites.net']
+    # Clean up empty strings
+    ALLOWED_HOSTS = [h.strip() for h in ALLOWED_HOSTS if h.strip()]
+
+    # 2. CSRF Trust (CRITICAL FIX)
+    # Explicitly trust the Azure HTTPS URL
+    CSRF_TRUSTED_ORIGINS = [
+        'https://trinetra.azurewebsites.net',
+    ]
+
+    # 3. SSL & Cookie Security
+    # These MUST be True for HTTPS to work correctly
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    
+    # Azure Load Balancer support (Trusts the SSL termination)
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
-    
-    # Static Files (WhiteNoise)
-    STATIC_ROOT = BASE_DIR / 'staticfiles'
-    STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
-    
-    # Trusted Origins
-    if 'CSRF_TRUSTED_ORIGINS' in os.environ:
-        CSRF_TRUSTED_ORIGINS = os.environ['CSRF_TRUSTED_ORIGINS'].split(',')
-    else:
-        CSRF_TRUSTED_ORIGINS = ['https://' + h for h in ALLOWED_HOSTS]
 else:
-    # Local Development
+    # --- LOCAL DEVELOPMENT SETTINGS ---
+    ALLOWED_HOSTS = ['*']
+    
     SECURE_SSL_REDIRECT = False
     SESSION_COOKIE_SECURE = False
     CSRF_COOKIE_SECURE = False
-    STATIC_ROOT = BASE_DIR / 'staticfiles'
     
-    # Relaxed Security for Demo (Prototyping Mode)
+    # Relaxed Security for Demo
     TRINETRA_STRICT_FIREWALL = False
 
     CSRF_TRUSTED_ORIGINS = [
