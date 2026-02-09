@@ -94,18 +94,10 @@ SESSION_COOKIE_AGE = 300 # 5 Minutes Auto-Logout
 # ==============================================================================
 
 # 1. Debug Mode
-# Default to True locally, set to False in production via Env Var
-DEBUG = os.environ.get('DEBUG', 'False') == 'True'
+# Robust check: handles 'True', 'true', '1'
+DEBUG = str(os.environ.get('DEBUG', 'False')).lower() in ['true', '1', 't']
 
-# 2. Allowed Hosts
-# Allow all in debug, otherwise restrict
-if DEBUG:
-    ALLOWED_HOSTS = ['*']
-else:
-    # Add localhost/127.0.0.1 for local production testing
-    ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1,[::1]').split(',')
-
-# 3. Database
+# 2. Database
 # Uses SQLite by default. If DATABASE_URL is present, utilizes it (PostgreSQL ready).
 if 'DATABASE_URL' in os.environ:
     DATABASES = {
@@ -119,49 +111,53 @@ else:
         }
     }
 
-# 4. Security & Static Files
+# 3. Static Files
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 
+# 4. Security Logic
 if not DEBUG:
-    # --- PRODUCTION SETTINGS (AZURE) ---
-    
-    # 1. Host Configuration
-    # We combine environment variable + hardcoded Azure URL to be safe
-    env_hosts = os.environ.get('ALLOWED_HOSTS', '').split(',')
-    ALLOWED_HOSTS = env_hosts + ['trinetra.azurewebsites.net']
-    # Clean up empty strings
-    ALLOWED_HOSTS = [h.strip() for h in ALLOWED_HOSTS if h.strip()]
-
-    # 2. CSRF Trust (CRITICAL FIX)
-    # Explicitly trust the Azure HTTPS URL
-    CSRF_TRUSTED_ORIGINS = [
-        'https://trinetra.azurewebsites.net',
-    ]
-
-    # 3. SSL & Cookie Security
-    # These MUST be True for HTTPS to work correctly
+    # --- PRODUCTION MODE (False) ---
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
     SECURE_SSL_REDIRECT = True
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
     
-    # Azure Load Balancer support (Trusts the SSL termination)
-    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '').split(',')
+
+    CSRF_TRUSTED_ORIGINS = []
 
 else:
-    # --- LOCAL DEVELOPMENT SETTINGS ---
-    ALLOWED_HOSTS = ['*']
-    
+    # --- DEBUG MODE (True) ---
+    # Relaxed settings for debugging
     SECURE_SSL_REDIRECT = False
     SESSION_COOKIE_SECURE = False
     CSRF_COOKIE_SECURE = False
-    
-    # Relaxed Security for Demo
     TRINETRA_STRICT_FIREWALL = False
 
+    ALLOWED_HOSTS = ['*']
+    
     CSRF_TRUSTED_ORIGINS = [
         'http://127.0.0.1:9000', 
         'http://localhost:9000',
         'http://127.0.0.1:8000',
         'http://localhost:8000',
     ]
+
+# ==============================================================================
+# FINAL FORCE-FIX FOR AZURE
+# ==============================================================================
+# These settings run LAST to ensure Azure works even if DEBUG is on.
+
+# Always allow the Azure URL
+azure_host = 'trinetra.azurewebsites.net'
+azure_origin = 'https://trinetra.azurewebsites.net'
+
+if azure_host not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(azure_host)
+
+if azure_origin not in CSRF_TRUSTED_ORIGINS:
+    CSRF_TRUSTED_ORIGINS.append(azure_origin)
+
+# Ensure lists are clean (remove empty strings if any)
+ALLOWED_HOSTS = [h.strip() for h in ALLOWED_HOSTS if h.strip()]
