@@ -22,10 +22,18 @@ from datetime import datetime
 def get_client_ip(request):
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
     if x_forwarded_for:
+        # Azure sends a list, take the first one
         ip = x_forwarded_for.split(',')[0]
     else:
+        # Fallback to direct connection
         ip = request.META.get('REMOTE_ADDR')
-    return ip
+    
+    # --- CRITICAL FIX FOR POSTGRESQL ---
+    # If the IP contains a port (e.g., 103.196.212.181:5333), strip it.
+    if ip and ':' in ip:
+        ip = ip.split(':')[0]
+        
+    return ip.strip()
 
 @never_cache
 def officer_login(request):
