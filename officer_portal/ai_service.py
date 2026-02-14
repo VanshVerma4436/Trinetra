@@ -57,10 +57,10 @@ def analyze_logs(case_id, question, log_file_path=None):
         
         logger.info(f"Analyzing logs for case {case_id}. Question: {question}")
         
+        # FIXED: Removed 'case_no' from arguments because app.py doesn't accept it in 'process_file'
         result = client.predict(
-            case_no=case_id,
-            file_obj=file_input,
-            user_q=question,
+            file_obj=file_input,    # Argument 1
+            user_question=question, # Argument 2
             api_name="/analyze_logs"
         )
         return result

@@ -5,7 +5,7 @@ from django.http import JsonResponse
 from django.conf import settings
 from django.contrib.auth import login
 from django.contrib.auth.models import User
-from django.views.decorators.csrf import csrf_exempt
+
 from webauthn import generate_authentication_options, verify_authentication_response
 from webauthn.helpers.structs import AuthenticationCredential
 from .models import BiometricDevice
@@ -48,7 +48,6 @@ def biometric_login_options(request):
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=400)
 
-@csrf_exempt
 def biometric_login_verify(request):
     """
     Step 2: Verify the cryptographic signature from the authenticator.

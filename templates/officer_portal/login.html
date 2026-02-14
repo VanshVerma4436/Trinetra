@@ -167,13 +167,19 @@
         // Simple username check if needed, or rely on resident keys
         const usernameInput = document.querySelector('input[name="username"]');
         const username = usernameInput ? usernameInput.value : '';
+        
+        // Get CSRF Token
+        const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]').value;
 
         try {
             // 1. Get Options
             const resp = await fetch('/auth/api/biometric/options/', {
                 method: 'POST',
                 body: JSON.stringify({ username: username }),
-                headers: { 'Content-Type': 'application/json' }
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': csrfToken
+                }
             });
             const options = await resp.json();
 
@@ -200,7 +206,10 @@
             const verifyResp = await fetch('/auth/api/biometric/verify/', {
                 method: 'POST',
                 body: JSON.stringify(attestation),
-                headers: { 'Content-Type': 'application/json' }
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': csrfToken
+                }
             });
 
             const result = await verifyResp.json();

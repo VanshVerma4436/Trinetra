@@ -21,19 +21,22 @@ from datetime import datetime
 
 def get_client_ip(request):
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-    if x_forwarded_for:
-        # Azure sends a list, take the first one
-        ip = x_forwarded_for.split(',')[0]
-    else:
-        # Fallback to direct connection
-        ip = request.META.get('REMOTE_ADDR')
     
-    # --- CRITICAL FIX FOR POSTGRESQL ---
-    # If the IP contains a port (e.g., 103.196.212.181:5333), strip it.
-    if ip and ':' in ip:
-        ip = ip.split(':')[0]
+    if x_forwarded_for:
+        # Take the LAST IP in the list. The first one can be spoofed by the user.
+        # The last one is usually appended by your load balancer/Azure.
+        ip = x_forwarded_for.split(',')[-1].strip()
+    else:
+        ip = request.META.get('REMOTE_ADDR')
         
-    return ip.strip()
+    # Remove port number if present (e.g., 127.0.0.1:54321 -> 127.0.0.1)
+    if ip and ':' in ip:
+        # IPv6 check: if it has multiple colons, don't split blindly. 
+        # But assuming IPv4 with port:
+        if '.' in ip: 
+            ip = ip.split(':')[0]
+            
+    return ip
 
 @never_cache
 def officer_login(request):
@@ -67,6 +70,22 @@ def officer_login(request):
 class AdminLoginOverrideView(LoginView):
     template_name = 'admin/login.html'
     
+    def dispatch(self, request, *args, **kwargs):
+        # 1. If user is already logged in...
+        if request.user.is_authenticated:
+            # 2. But they are NOT a superuser (e.g., just a normal Officer)
+            if not request.user.is_superuser:
+                # Force logout so they have to enter Admin credentials
+                from django.contrib.auth import logout
+                logout(request)
+            
+            # 3. If they ARE a superuser but haven't passed 2FA yet
+            elif request.user.is_superuser and not request.session.get('admin_2fa_verified'):
+                # Force them to the 2FA page immediately
+                return redirect('admin_2fa')
+                
+        return super().dispatch(request, *args, **kwargs)
+
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context['site_header'] = "Trinetra Commander"
@@ -76,14 +95,12 @@ class AdminLoginOverrideView(LoginView):
         return context
 
     def form_valid(self, form):
-        # 1. Log the user in (Standard Django Login)
+        # Standard login logic
         response = super().form_valid(form)
         
-        # 2. Check if Superuser
+        # If login success, trigger 2FA flag
         if self.request.user.is_superuser:
-            # 3. INTERCEPT: Set 2FA Pending
             self.request.session['admin_2fa_verified'] = False
-            # Redirect to 2FA page
             return redirect('admin_2fa')
             
         return response
