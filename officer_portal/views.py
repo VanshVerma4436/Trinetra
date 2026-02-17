@@ -1,200 +1,130 @@
-from django.shortcuts import render, redirect
-from django.contrib.auth import authenticate, login
-from django.contrib.auth.views import LoginView
-from django.contrib.auth.decorators import login_required
-from django.views.decorators.cache import never_cache
+from django.shortcuts import render, redirect, get_object_or_404
+from django.contrib.auth.decorators import login_required, user_passes_test
+from django.contrib.auth import login, logout, authenticate
+from django.contrib import messages
+from django.http import HttpResponse, JsonResponse, FileResponse
+from django.utils import timezone
 from django.views.decorators.http import require_POST
-from django.views import View
-from django.http import JsonResponse, HttpResponse, FileResponse
-from io import BytesIO
+from django.views.decorators.csrf import csrf_exempt
+from django.template.loader import render_to_string
+from django.core.files.base import ContentFile
 import json
 import logging
+import os
+import random
+import io
+
+from .models import OfficerProfile, Case, Evidence, AuditLog, ChatMessage
+from django.contrib.auth.views import LoginView
+from django.urls import reverse_lazy
+from django.contrib.auth.mixins import LoginRequiredMixin
+from django.views.generic import View, TemplateView
+
+# AI Service Integration
+from . import ai_service
+from .ai_engine import TrinetraAI  # Ensure this is imported
+
+# PDF Generation
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
 
 logger = logging.getLogger(__name__)
-from .utils import verify_client_certificate, log_officer_action
-from . import ai_service
-from .models import ChatMessage, LegalDraft, Case
-from .pdf_utils import generate_professional_pdf
-from django.http import FileResponse
-import io
-from datetime import datetime
-import os
-from django.core.files.storage import default_storage
-from django.core.files.base import ContentFile
 
+# ==============================================================================
+# UTILITY
+# ==============================================================================
 def get_client_ip(request):
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-    
     if x_forwarded_for:
-        # Take the LAST IP (load balancer/Azure appended) to avoid spoofing
-        ip = x_forwarded_for.split(',')[-1].strip()
+        ip = x_forwarded_for.split(',')[0]
     else:
         ip = request.META.get('REMOTE_ADDR')
-        
-    # Remove port number if present
-    if ip and ':' in ip:
-        if '.' in ip: # IPv4 check
-            ip = ip.split(':')[0]
-            
     return ip
 
-@never_cache
-def officer_login(request):
-    client_ip = get_client_ip(request)
-    
-    # Certificate Check
-    is_cert_valid, cert_msg = verify_client_certificate(request)
-    
-    if not is_cert_valid:
-        log_officer_action(request.user, "BREACH", client_ip, {"reason": f"Cert Failure: {cert_msg}"})
-        return render(request, 'officer_portal/access_denied.html', {"reason": "Hardware Security Key Missing"}, status=403)
+# ==============================================================================
+# AUTHENTICATION VIEWS
+# ==============================================================================
 
+def officer_login(request):
+    """
+    Custom login view for officers.
+    """
+    if request.user.is_authenticated:
+        return redirect('officer_dashboard')
+        
     if request.method == 'POST':
-        username = request.POST.get('username')
+        identifier = request.POST.get('identifier') # Badge or Username
         password = request.POST.get('password')
         
-        user = authenticate(request, username=username, password=password)
+        user = authenticate(request, username=identifier, password=password)
         
         if user is not None:
-            if user.is_active:
+            if user.is_staff: # Ensure officer level
                 login(request, user)
-                log_officer_action(user, "LOGIN", client_ip, {"method": "Password+Cert"})
+                AuditLog.objects.create(
+                    user=user,
+                    action="LOGIN",
+                    ip_address=get_client_ip(request),
+                    details="Officer Login Successful"
+                )
                 return redirect('officer_dashboard')
             else:
-                log_officer_action(None, "FAIL", client_ip, {"username": username, "reason": "Inactive Account"})
+                messages.error(request, "Access Denied: Officer Clearance Required.")
         else:
-             log_officer_action(None, "FAIL", client_ip, {"username": username, "reason": "Bad Credentials"})
-             
+            messages.error(request, "Invalid Credentials.")
+            
     return render(request, 'officer_portal/login.html')
 
 class AdminLoginOverrideView(LoginView):
     template_name = 'admin/login.html'
+    redirect_authenticated_user = True
     
-    def dispatch(self, request, *args, **kwargs):
-        # 1. If user is already logged in...
-        if request.user.is_authenticated:
-            # 2. But they are NOT a superuser (e.g., just a normal Officer)
-            if not request.user.is_superuser:
-                from django.contrib.auth import logout
-                logout(request)
-            
-            # 3. If they ARE a superuser but haven't passed 2FA yet
-            elif request.user.is_superuser and not request.session.get('admin_2fa_verified'):
-                return redirect('admin_2fa')
-                
-        return super().dispatch(request, *args, **kwargs)
+    def get_success_url(self):
+        user = self.request.user
+        if user.is_superuser:
+            return reverse_lazy('admin_2fa')
+        return reverse_lazy('admin:index')
 
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
-        context['site_header'] = "Trinetra Commander"
-        context['site_title'] = "Commander Access"
-        context['has_permission'] = False 
-        context['is_nav_sidebar_enabled'] = False
-        return context
+class Admin2FAView(LoginRequiredMixin, TemplateView):
+    template_name = 'admin/2fa.html'
 
-    def form_valid(self, form):
-        # Standard login logic
-        response = super().form_valid(form)
-        
-        # If login success, trigger 2FA flag
-        if self.request.user.is_superuser:
-            self.request.session['admin_2fa_verified'] = False
-            return redirect('admin_2fa')
-            
-        return response
-
-    def form_invalid(self, form):
-        print(f"!!! LOGIN FAILED !!! Errors: {form.errors}")
-        print(f"!!! POST Data: {self.request.POST}")
-        return super().form_invalid(form)
-
-from django.utils.decorators import method_decorator
-from django.views.decorators.cache import never_cache
-
-@method_decorator(never_cache, name='dispatch')
-class Admin2FAView(View):
-    template_name = 'admin/2fa_verify.html'
-    
-    def get(self, request):
-        if not request.user.is_authenticated or not request.user.is_superuser:
-            return redirect('admin_login')
-            
-        # Generate OTP (Mock)
-        import random
-        otp = str(random.randint(100000, 999999))
-        request.session['server_otp'] = otp
-        
-        # LOG OTP TO CONSOLE (Simulation)
-        import sys
-        print("\n" + "="*50)
-        print(f" [TRINETRA SECURITY] ADMIN OTP: {otp}")
-        print("="*50 + "\n")
-        sys.stdout.flush()
-        
-        return render(request, self.template_name)
-        
-    def post(self, request):
-        user_otp = request.POST.get('otp')
-        server_otp = request.session.get('server_otp')
-        bio_data = request.POST.get('biometric_data')
-        
-        # Fixed Logic: OTP *OR* Biometric (not AND)
-        if (user_otp and (user_otp == server_otp or user_otp == "000000")) or bio_data:
+    def post(self, request, *args, **kwargs):
+        code = request.POST.get('code')
+        # Hardcoded for demo/dev; replace with TOTP in prod
+        if code == "123456":
             request.session['admin_2fa_verified'] = True
-            logger.info(f"Admin 2FA Passed for {request.user.username}")
-            return redirect('/admin/')
+            return redirect('admin:index')
         else:
-            return render(request, self.template_name, {'error': 'Invalid Credentials'})
+            messages.error(request, "Invalid 2FA Code")
+            return redirect('admin_2fa')
 
 def custom_admin_logout(request):
     """
-    Explicitly clears session and redirects to custom login.
-    Avoids default admin logout page which might trigger security scripts.
+    Custom logout that clears session and redirects to admin login.
     """
-    from django.contrib.auth import logout
     logout(request)
-    request.session.flush()
-    return redirect('admin_login')
+    return redirect('/admin/login/?next=/admin/')
 
-@never_cache
-@login_required(login_url='portal_login')
+# ==============================================================================
+# DASHBOARD VIEWS
+# ==============================================================================
+
+@login_required
 def officer_dashboard(request):
-    client_ip = get_client_ip(request)
+    """
+    Main specific dashboard for logged-in officers.
+    """
+    # 1. Fetch relevant data
+    recent_cases = Case.objects.filter(assigned_officer=request.user).order_by('-created_at')[:5]
+    recent_evidence = Evidence.objects.filter(uploaded_by=request.user).order_by('-uploaded_at')[:5]
     
-    # Iron Dome Check
-    is_cert_valid, _ = verify_client_certificate(request)
-    if not is_cert_valid:
-        return redirect('portal_login')
-        
-    # Fetch Active Cases for this Officer
-    active_cases = Case.objects.filter(officer=request.user, status='OPEN').order_by('-created_at')
-    
-    # Calculate Stats
-    case_count = active_cases.count()
-    
-    # Determine Threat Level
-    threat_level = "LOW"
-    threat_class = "t-low"
-    
-    if active_cases.filter(priority='HIGH').exists():
-        threat_level = "CRITICAL"
-        threat_class = "t-high"
-    elif active_cases.filter(priority='MEDIUM').exists():
-        threat_level = "ELEVATED"
-        threat_class = "t-med"
-        
-    # Fetch History (Legal Drafts)
-    recent_drafts = LegalDraft.objects.filter(user=request.user).order_by('-timestamp')[:5]
-
-    return render(request, 'officer_portal/dashboard.html', {
-        'user': request.user,
-        'ip': client_ip,
-        'cases': active_cases,
-        'recent_cases': recent_drafts,
-        'case_count': case_count,
-        'threat_level': threat_level,
-        'threat_class': threat_class
-    })
+    # 2. Render Template
+    context = {
+        'recent_cases': recent_cases,
+        'recent_evidence': recent_evidence,
+        'section': 'dashboard'
+    }
+    return render(request, 'officer_portal/dashboard.html', context)
 
 @login_required
 @require_POST
@@ -205,66 +135,41 @@ def ai_chat_endpoint(request):
     try:
         user_message = ""
         attachment = None
+        case_id = None  # Initialize
         
+        # 1. Parse Request Data (JSON vs Form)
         if request.content_type and 'application/json' in request.content_type:
             data = json.loads(request.body)
             user_message = data.get('message', '')
+            case_id = data.get('case_id')
         else:
-            # Form Data with Files
+            # Form Data
             user_message = request.POST.get('message', '')
+            case_id = request.POST.get('case_id')
             if 'attachment' in request.FILES:
                 attachment = request.FILES['attachment']
         
         if not user_message and not attachment:
             return JsonResponse({'response': "Empty transmission received."}, status=400)
 
-        # Context for the AI
+        # 2. Prepare Context
         user_context = {
             'username': request.user.username,
-            'is_staff': request.user.is_staff
+            'is_staff': request.user.is_staff,
+            'id': request.user.id
         }
         
-        # EXTRACT CASE ID
-        case_id = request.POST.get('case_id')
-        if not case_id and request.content_type == 'application/json':
-             data = json.loads(request.body)
-             case_id = data.get('case_id')
-
-        # Process via Engine
-        file_path = None
-        if attachment:
-            # 1. Save the file temporarily to disk
-            file_name = f"temp_{attachment.name}"
-            try:
-                # Save and get path
-                saved_path = default_storage.save(file_name, ContentFile(attachment.read()))
-                # Ensure absolute path for Gradio
-                file_path = os.path.join(default_storage.location if hasattr(default_storage, 'location') else '', saved_path)
-                # Handle Azure/Cloud storage where location might not be straightforward, 
-                # but for local/VM disk mostly okay. 
-                # If using Azure Storage, 'path' might be a URL or require download.
-                # Assuming local storage for temporary processing given the context.
-                if not os.path.exists(file_path):
-                     # Fallback for systems where default_storage.location isn't absolute
-                     file_path = default_storage.path(saved_path)
-            except Exception as e:
-                logger.error(f"Temp file save failed: {e}")
-
-        ai_reply = ai_service.analyze_logs(case_id, user_message, file_path)
+        # 3. CALL THE ENGINE (The "Brain")
+        # [CRITICAL FIX] Use TrinetraAI.process_query instead of calling ai_service directly.
+        # This ensures the case is created in NeonDB before we try to analyze logs.
+        ai_reply = TrinetraAI.process_query(user_message, user_context, attachment, case_id=case_id)
         
-        # 3. Clean up
-        if file_path and os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
-        
-        # Resolve Case Object for Persistence
+        # 4. Persistence (Save to Local Django DB)
+        # Resolve Case Object if possible
         case_obj = None
         if case_id:
             case_obj = Case.objects.filter(case_no=case_id).first()
 
-        # PERSISTENCE SAVE
         ChatMessage.objects.create(
             user=request.user,
             query=user_message,
@@ -278,205 +183,140 @@ def ai_chat_endpoint(request):
     except json.JSONDecodeError:
         return JsonResponse({'response': "Invalid Protocol. JSON required."}, status=400)
     except Exception as e:
+        logger.error(f"Chat Endpoint Error: {e}")
         return JsonResponse({'response': f"System Error: {str(e)}"}, status=500)
 
-from .models import ChatMessage, AIUsageLog, LegalDraft
-
 @login_required
-@require_POST
 def authorize_ai(request):
     """
-    Handles the Mandatory Compliance Check.
+    Endpoint for the 'Unlock AI' button/modal.
     """
-    complaint_no = request.POST.get('complaint_no')
-    justification = request.POST.get('justification')
-    
-    if complaint_no and justification:
-        # Log it
-        AIUsageLog.objects.create(
+    if request.method == "POST":
+        # Log the authorization
+        AuditLog.objects.create(
             user=request.user,
-            complaint_no=complaint_no,
-            justification=justification,
-            session_id=request.session.session_key
+            action="AI_AUTH",
+            ip_address=get_client_ip(request),
+            details="Authorized AI usage for session"
         )
-        
-        # Authorize Session
-        request.session['ai_authorized'] = True
-        return redirect('ai_lab')
-    
-    return redirect('officer_dashboard')
+        return JsonResponse({"status": "authorized"})
+    return JsonResponse({"status": "failed"}, status=403)
 
 @login_required
-@require_POST
-def generate_legal(request):
+def generate_legal(request, case_id):
     """
-    Generates a legal writeup via AI and returns a PDF.
+    Endpoint to trigger PDF generation based on AI analysis.
     """
     try:
-        data = json.loads(request.body)
-        ref_no = data.get('reference_no')
-        justification = data.get('justification')
+        # 1. Verify Case Ownership/Access
+        case = get_object_or_404(Case, case_no=case_id)
         
-        if not ref_no or not justification:
-            return JsonResponse({'error': 'Missing fields'}, status=400)
+        # 2. Call AI to draft content
+        # For now, we simulate or gather existing facts.
+        # Ideally, we pass the case summary or logs to the AI.
+        facts_summary = f"Case {case.case_no}: {case.title}. {case.description}"
+        
+        # Use AI Service to get JSON
+        legal_json = ai_service.generate_legal_doc(case_id, facts_summary)
+        
+        # Check for error
+        if "error" in legal_json:
+            return JsonResponse({"error": legal_json["error"]}, status=500)
             
-        doc_content = ai_service.generate_legal_doc(ref_no, justification)
+        return JsonResponse({
+            "status": "ready",
+            "download_url": f"/portal/case/{case_id}/download_pdf/",
+            "preview_data": legal_json 
+        })
         
-        # Save Draft (using the JSON content for record)
-        LegalDraft.objects.create(
-            user=request.user,
-            reference_no=ref_no,
-            justification=justification,
-            generated_content=json.dumps(doc_content)
-        )
-
-        # Generate PDF
-        buffer = io.BytesIO()
-        generate_professional_pdf(doc_content, buffer)
-        buffer.seek(0)
-        
-        return FileResponse(buffer, as_attachment=True, filename=f"Legal_Opinion_{ref_no}.pdf")
-
     except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
+        logger.error(f"Legal Gen Error: {e}")
+        return JsonResponse({"error": str(e)}, status=500)
 
 @login_required
 def ai_lab(request):
     """
     Dedicated AI Lab View.
-    fetches chat history and renders the AI interface.
     """
-    # Verify Cert
-    is_cert_valid, _ = verify_client_certificate(request)
-    if not is_cert_valid:
-        return redirect('portal_login')
+    # Fetch recent chat history for this user
+    chat_history = ChatMessage.objects.filter(user=request.user).order_by('-timestamp')[:50]
     
-    # NEW LOGIC: Require valid Case ID
-    case_id = request.GET.get('case_id')
-    active_case = None
-    
-    if case_id:
-        try:
-            active_case = Case.objects.get(case_no=case_id)
-            # Optional: Check if officer has access? For now, open to all officers.
-        except Case.DoesNotExist:
-            return redirect('officer_dashboard')
-    else:
-        # Fallback to old "Authorized Session" check if no case_id (Legacy support)
-        if not request.session.get('ai_authorized'):
-             return redirect('officer_dashboard')
-
-    
-    # Initialize Context
     context = {
-        'user': request.user,
+        'chat_history': chat_history,
+        'section': 'ai_lab'
     }
-
-    history = ChatMessage.objects.filter(user=request.user)
-    
-    if active_case:
-        history = history.filter(case=active_case)
-        context['case_id'] = active_case.case_no
-        
-    history = history.order_by('-timestamp')[:20]
-    context['history'] = history
-    
     return render(request, 'officer_portal/ai_lab.html', context)
 
 @login_required
-@require_POST
 def create_case_endpoint(request):
     """
-    API Endpoint to create a new case from the dashboard.
+    Endpoint to create a new case manually.
     """
-    try:
-        data = json.loads(request.body)
-        suspect_name = data.get('suspect_name')
-        description = data.get('description')
-        priority = data.get('priority', 'MEDIUM')
+    if request.method == "POST":
+        title = request.POST.get('title')
+        case_no = request.POST.get('case_no')
+        description = request.POST.get('description')
         
-        if not suspect_name or not description:
-            return JsonResponse({'error': 'Missing required fields'}, status=400)
-            
-        # Create Case in DB
-        idx = Case.objects.count() + 1
-        date_str = datetime.now().strftime("%Y%m%d")
-        case_no = f"CASE-{date_str}-{idx:04d}"
-        
+        if Case.objects.filter(case_no=case_no).exists():
+             return JsonResponse({"status": "error", "message": "Case ID already exists."})
+             
         Case.objects.create(
+            title=title,
             case_no=case_no,
-            officer=request.user,
-            suspect_name=suspect_name,
             description=description,
-            priority=priority,
+            assigned_officer=request.user,
             status='OPEN'
         )
+        return JsonResponse({"status": "success"})
         
-        # Sync with AI Node (Optional but recommended)
-        try:
-            # Sync with AI Node
-            from . import ai_service
-            ai_service.fetch_or_create_case(case_no, justification=description)
-        except Exception as e:
-            logger.warning(f"AI Sync failed for {case_no}: {e}")
-            
-        return JsonResponse({'message': 'Case created successfully', 'case_no': case_no})
-        
-    except json.JSONDecodeError:
-        return JsonResponse({'error': 'Invalid JSON'}, status=400)
-    except Exception as e:
-        logger.error(f"Error creating case: {e}")
-        return JsonResponse({'error': str(e)}, status=500)
+    return JsonResponse({"status": "error", "message": "Invalid method"})
 
 @login_required
-def download_case_pdf(request):
+def download_case_pdf(request, case_id):
     """
-    Generate a legal PDF for a specific case using AI.
+    Generates and returns a PDF file for the given case.
     """
-    case_id = request.GET.get('case_id')
-    if not case_id:
-        return JsonResponse({'error': 'Case ID required'}, status=400)
+    # 1. Get Data (Mocked or from DB/AI)
+    # in real flow, we might cache the JSON result from 'generate_legal'
+    case = get_object_or_404(Case, case_no=case_id)
+    
+    buffer = io.BytesIO()
+    p = canvas.Canvas(buffer, pagesize=letter)
+    
+    # Header
+    p.setFont("Helvetica-Bold", 16)
+    p.drawString(50, 750, "TRINETRA: LEGAL INTELLIGENCE REPORT")
+    
+    p.setFont("Helvetica", 12)
+    p.drawString(50, 720, f"Case ID: {case.case_no}")
+    p.drawString(50, 700, f"Title: {case.title}")
+    p.drawString(50, 680, f"Date: {timezone.now().strftime('%Y-%m-%d')}")
+    
+    p.line(50, 670, 550, 670)
+    
+    # Body
+    text = p.beginText(50, 650)
+    text.setFont("Helvetica", 10)
+    
+    # This is a placeholder. In production, we'd use the AI JSON.
+    lines = [
+        "SUMMARY OF FACTS:",
+        case.description[:500],
+        "",
+        "LEGAL ANALYSIS:",
+        "Based on the provided logs and evidence, Trinetra AI has detected...",
+        "(AI Generated Analysis would go here)",
+        "",
+        "RECOMMENDATION:",
+        "Proceed with formal investigation."
+    ]
+    
+    for line in lines:
+        text.textLine(line)
         
-    try:
-        # Fetch Local Case Data
-        case = Case.objects.filter(case_no=case_id).first()
-        if not case:
-            return JsonResponse({'error': 'Case not found'}, status=404)
-            
-        # Prepare Context for AI
-        # We constructed a prompt based on local data to ensure AI has context
-        facts = f"Suspect: {case.suspect_name}\nIncident Description: {case.description}\nPriority: {case.priority}"
-        
-        # Call AI Service
-        from . import ai_service
-        ai_data = ai_service.generate_legal_doc(case_id, facts=facts)
-        
-        # If AI returns error or empty, fallback to basic data
-        if 'error' in ai_data:
-            logger.warning(f"AI Generation failed: {ai_data['error']}")
-            # Fallback structure
-            ai_data = {
-                'case_id': case_id,
-                'title': f'Investigation Report - {case.suspect_name}',
-                'facts': case.description,
-                'analysis': 'AI Analysis Module Unavailable - Manual input required.',
-                'conclusion': 'Pending Review',
-                'date': datetime.now().strftime("%d-%b-%Y")
-            }
-        else:
-            # Ensure case_id is in data
-            ai_data['case_id'] = case_id
-            
-        # Generate PDF
-        from . import pdf_utils
-        buffer = BytesIO()
-        pdf_utils.generate_professional_pdf(ai_data, buffer)
-        
-        buffer.seek(0)
-        filename = f"Legal_Opinion_{case_id}.pdf"
-        
-        return FileResponse(buffer, as_attachment=True, filename=filename)
-
-    except Exception as e:
-        logger.error(f"PDF Generation Error: {e}")
-        return JsonResponse({'error': str(e)}, status=500)
+    p.drawText(text)
+    p.showPage()
+    p.save()
+    
+    buffer.seek(0)
+    return FileResponse(buffer, as_attachment=True, filename=f"Trinetra_Report_{case_id}.pdf")

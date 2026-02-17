@@ -2,80 +2,80 @@ from gradio_client import Client, handle_file
 import os
 import logging
 import json
-import time
 
 logger = logging.getLogger(__name__)
-logger.info("Initializing Trinetra AI Service v2.1 - Positional Args")
 
+# CONFIGURATION
 HF_TOKEN = os.getenv("HF_API_TOKEN")
-SPACE_URL = os.getenv("TRINETRA_AI_NODE", "VVerma4436/Legal-Log-Engine")
+# Make sure this URL matches your space exactly
+SPACE_URL = os.getenv("TRINETRA_AI_NODE", "https://vverma4436-legal-log-engine.hf.space/")
 
 def get_ai_client():
+    if not HF_TOKEN:
+         logger.error("HF_API_TOKEN is missing in .env")
+         raise ValueError("HF_API_TOKEN not configured.")
+    
     try:
-        # Prefer headers for compatibility
-        if HF_TOKEN:
-            return Client(SPACE_URL, headers={"Authorization": f"Bearer {HF_TOKEN}"})
-        return Client(SPACE_URL)
+        # [FIX] Authenticate securely with hf_token
+        return Client(SPACE_URL, hf_token=HF_TOKEN)
     except Exception as e:
-        logger.error(f"Failed to initialize AI Client: {e}")
+        logger.error(f"Failed to connect to AI Client: {e}")
         raise e
 
-def predict_with_retry(fn_name, *args, **kwargs):
+def fetch_or_create_case(case_id):
     """
-    Retries AI calls for 120 seconds to handle Cold Boot.
+    Syncs the case ID with the Remote AI Node.
     """
-    MAX_RETRIES = 6
-    RETRY_DELAY = 20
-    
-    for attempt in range(MAX_RETRIES):
-        try:
-            client = get_ai_client()
-            return client.predict(*args, **kwargs)
-        except Exception as e:
-            logger.warning(f"{fn_name} attempt {attempt+1} failed: {e}")
-            if attempt == MAX_RETRIES - 1:
-                raise e
-            time.sleep(RETRY_DELAY)
-
-def fetch_or_create_case(case_id, justification=None):
     try:
-        # HF App Signature: fetch_or_create_case(case_no)
-        return predict_with_retry(
-            "fetch_case",
-            case_id,
+        client = get_ai_client()
+        # [FIX] Explicit keyword argument 'case_no' to match Space
+        return client.predict(
+            case_no=case_id,
             api_name="/fetch_or_create_case"
         )
-    except Exception:
+    except Exception as e:
+        logger.error(f"Case Sync Error: {e}")
         return "AI Node offline."
 
 def analyze_logs(case_id, question, log_file_path=None):
+    """
+    Sends logs/questions to the Remote AI.
+    """
     try:
-        file_input = handle_file(log_file_path) if log_file_path else None
+        client = get_ai_client()
         
-        # HF App Signature: analyze_logs(case_no, file_obj, user_q)
-        result = predict_with_retry(
-            "analyze_logs",
-            case_id,
-            file_input,
-            question,
+        file_input = None
+        if log_file_path:
+            file_input = handle_file(log_file_path)
+        
+        # [FIX] Explicit keyword arguments matching Remote App inputs
+        result = client.predict(
+            case_no=case_id,
+            file_obj=file_input,
+            user_q=question,
             api_name="/analyze_logs"
         )
-        # Result is (text, json_data) tuple
-        if isinstance(result, (list, tuple)):
-            return result[0] 
         return result
     except Exception as e:
+        logger.error(f"Analysis Error: {e}")
         return f"AI Connection Error: {str(e)}"
 
 def generate_legal_doc(case_id, facts):
+    """
+    Generates JSON for legal documents.
+    """
     try:
-        # HF App Signature: draft_legal_json(case_no, user_instruction)
-        json_res = predict_with_retry(
-            "legal_doc",
-            case_id,
-            facts,
+        client = get_ai_client()
+        
+        # [FIX] Key Update: Space expects 'user_instruction', not 'justification'
+        json_str = client.predict(
+            case_no=case_id,
+            user_instruction=facts, 
             api_name="/draft_legal_json"
         )
-        return json_res if isinstance(json_res, dict) else json.loads(json_res)
+        
+        # Parse the returned string into a Dict
+        return json.loads(json_str)
     except Exception as e:
+        logger.error(f"Legal Doc Error: {e}")
         return {"error": str(e)}
