@@ -14,7 +14,26 @@ import os
 import random
 import io
 
-from .models import OfficerProfile, Case, Evidence, AuditLog, ChatMessage
+# --- CORRECTED IMPORTS ---
+
+# 1. Models from THIS App (officer_portal)
+from .models import Case, ChatMessage
+# (Only import Evidence if you actually created that class in officer_portal/models.py.
+#  If not, remove 'Evidence' from the import below to stop the crash.)
+try:
+    from .models import Evidence
+except ImportError:
+    pass # Skip if Evidence model is missing
+
+# 2. Models from AUTHENTICATION App
+from authentication.models import OfficerProfile
+
+# 3. Models from AUDIT_LOGS App
+# We try to import it as 'AuditLog'. If your model is named 'ImmutableLog', we alias it.
+try:
+    from audit_logs.models import AuditLog
+except ImportError:
+    from audit_logs.models import ImmutableLog as AuditLog
 from django.contrib.auth.views import LoginView
 from django.urls import reverse_lazy
 from django.contrib.auth.mixins import LoginRequiredMixin

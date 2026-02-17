@@ -50,7 +50,7 @@ class Case(models.Model):
     ]
     priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES, default='MEDIUM')
     
-    officer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='cases', null=True, blank=True)
+    assigned_officer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='cases', null=True, blank=True)
     
     summary = models.TextField(blank=True, null=True, help_text="Running log/summary of the case")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -61,3 +61,13 @@ class Case(models.Model):
 
     def __str__(self):
         return f"{self.case_no} - {self.suspect_name or 'Unknown'}"
+
+class Evidence(models.Model):
+    case = models.ForeignKey(Case, on_delete=models.CASCADE, related_name='evidence')
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    file = models.FileField(upload_to='evidence/%Y/%m/')
+    description = models.TextField(blank=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Evidence for {self.case.case_no} by {self.uploaded_by.username}"
