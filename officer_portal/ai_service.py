@@ -19,7 +19,7 @@ def get_ai_client():
         logger.error(f"Failed to initialize AI Client: {e}")
         raise e
 
-def predict_with_retry(fn_name, **kwargs):
+def predict_with_retry(fn_name, *args, **kwargs):
     """
     Retries AI calls for 120 seconds to handle Cold Boot.
     """
@@ -29,7 +29,7 @@ def predict_with_retry(fn_name, **kwargs):
     for attempt in range(MAX_RETRIES):
         try:
             client = get_ai_client()
-            return client.predict(**kwargs)
+            return client.predict(*args, **kwargs)
         except Exception as e:
             logger.warning(f"{fn_name} attempt {attempt+1} failed: {e}")
             if attempt == MAX_RETRIES - 1:
@@ -38,11 +38,10 @@ def predict_with_retry(fn_name, **kwargs):
 
 def fetch_or_create_case(case_id, justification=None):
     try:
-        # Calls Logic 3 in app.py
+        # HF App Signature: fetch_or_create_case(case_no)
         return predict_with_retry(
             "fetch_case",
-            case_no=case_id,
-            justification=justification or "Sync",
+            case_id,
             api_name="/fetch_or_create_case"
         )
     except Exception:
@@ -52,13 +51,12 @@ def analyze_logs(case_id, question, log_file_path=None):
     try:
         file_input = handle_file(log_file_path) if log_file_path else None
         
-        # Calls Logic 1 in app.py
-        # Note: app.py expects (file_obj, user_question, case_id)
+        # HF App Signature: analyze_logs(case_no, file_obj, user_q)
         result = predict_with_retry(
             "analyze_logs",
-            file_obj=file_input,
-            user_question=question,
-            case_id=case_id,
+            case_id,
+            file_input,
+            question,
             api_name="/analyze_logs"
         )
         # Result is (text, json_data) tuple
@@ -70,11 +68,11 @@ def analyze_logs(case_id, question, log_file_path=None):
 
 def generate_legal_doc(case_id, facts):
     try:
-        # Calls Logic 2 in app.py
+        # HF App Signature: draft_legal_json(case_no, user_instruction)
         json_res = predict_with_retry(
             "legal_doc",
-            case_id=case_id,
-            justification=facts,
+            case_id,
+            facts,
             api_name="/draft_legal_json"
         )
         return json_res if isinstance(json_res, dict) else json.loads(json_res)
