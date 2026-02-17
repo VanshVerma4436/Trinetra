@@ -2,9 +2,6 @@ from django.db import models
 from django.conf import settings
 
 class AIUsageLog(models.Model):
-    """
-    Mandatory compliance log for AI access as per New Law.
-    """
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     complaint_no = models.CharField(max_length=100, help_text="Reference/Complaint Number")
     justification = models.TextField(help_text="Reason for using AI")
@@ -36,10 +33,6 @@ class ChatMessage(models.Model):
         return f"{self.user.username} - {self.timestamp.strftime('%Y-%m-%d %H:%M')}"
 
 class Case(models.Model):
-    """
-    AI Memory Table for 'Legal Log Engine'.
-    Maps exactly to the 'cases' table required by the AI.
-    """
     case_no = models.CharField(max_length=255, unique=True, help_text="Unique Case ID used by AI")
     suspect_name = models.CharField(max_length=255, blank=True, null=True, help_text="Name of the suspect/target")
     description = models.TextField(blank=True, null=True, help_text="Detailed description of the incident")

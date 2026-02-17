@@ -1,27 +1,20 @@
 from django.core.management.base import BaseCommand
-from gradio_client import Client
-import os
+from officer_portal.ai_service import fetch_or_create_case
 import time
 
 class Command(BaseCommand):
-    help = 'Pings the AI Node to keep it awake'
+    help = 'Pings the AI Node to keep it awake using the robust Service Layer'
 
     def handle(self, *args, **kwargs):
-        SPACE_URL = os.getenv("TRINETRA_AI_NODE", "https://vverma4436-legal-log-engine.hf.space/")
-        HF_TOKEN = os.getenv("HF_API_TOKEN")
-
-        self.stdout.write(f"Pinging AI Node at {SPACE_URL}...")
+        self.stdout.write("🚀 Initiating AI Keep-Alive Ping...")
         
         try:
-            # Initialize Client
-            client = Client(SPACE_URL, hf_token=HF_TOKEN)
+            # We use the service function because it already handles:
+            # 1. Old gradio_client versions (The error you just saw)
+            # 2. Retries (If AI is sleeping)
+            # 3. Authentication Headers
+            response = fetch_or_create_case("KEEP-ALIVE-PING", "Routine maintenance ping")
             
-            # Send a dummy request (using the fetch_or_create_case endpoint as it's lightweight)
-            client.predict(
-                case_no="KEEP-ALIVE-PING",
-                justification="Routine maintenance ping",
-                api_name="/fetch_or_create_case"
-            )
-            self.stdout.write(self.style.SUCCESS('Successfully pinged AI Node.'))
+            self.stdout.write(self.style.SUCCESS(f'✅ Ping Successful. Response: {str(response)[:100]}...'))
         except Exception as e:
-            self.stdout.write(self.style.ERROR(f'Failed to ping AI Node: {e}'))
+            self.stdout.write(self.style.ERROR(f'❌ Failed to ping AI Node: {e}'))

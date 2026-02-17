@@ -94,19 +94,14 @@ SESSION_COOKIE_AGE = 300 # 5 Minutes Auto-Logout
 # ==============================================================================
 
 # 1. Debug Mode
-# Robust check: handles 'True', 'true', '1'
 DEBUG = str(os.environ.get('DEBUG', 'False')).lower() in ['true', '1', 't']
 
-# 2. Database
-# Uses SQLite by default. If DATABASE_URL is present, utilizes it (PostgreSQL ready).
-if 'DATABASE_URL' in os.environ:
-    DATABASES = {
-        'default': dj_database_url.config(
-            # CHANGE: Set to 0 to prevent "SSL connection closed unexpectedly" errors
-            conn_max_age=0, 
-            ssl_require=True
-        )
-    }
+DATABASES = {
+    'default': dj_database_url.config(
+        conn_max_age=0,  # Prevent SSL errors on Azure
+        ssl_require=True
+    )
+}
 # 3. Static Files
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
@@ -140,20 +135,20 @@ else:
         'http://localhost:8000',
     ]
 
-# ==============================================================================
-# FINAL FORCE-FIX FOR AZURE
-# ==============================================================================
-# These settings run LAST to ensure Azure works even if DEBUG is on.
-
-# Always allow the Azure URL
+# Azure Configuration
 azure_host = 'trinetra.azurewebsites.net'
 azure_origin = 'https://trinetra.azurewebsites.net'
 
+# Auto-add default Azure host if not covered
 if azure_host not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append(azure_host)
 
 if azure_origin not in CSRF_TRUSTED_ORIGINS:
     CSRF_TRUSTED_ORIGINS.append(azure_origin)
 
-# Ensure lists are clean (remove empty strings if any)
+# Load dynamic CSRF origins from Env (e.g. for custom domains)
+env_csrf = os.environ.get('CSRF_TRUSTED_ORIGINS')
+if env_csrf:
+    CSRF_TRUSTED_ORIGINS.extend([origin.strip() for origin in env_csrf.split(',') if origin.strip()])
+
 ALLOWED_HOSTS = [h.strip() for h in ALLOWED_HOSTS if h.strip()]

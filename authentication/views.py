@@ -26,19 +26,15 @@ else:
 
 def biometric_login_options(request):
     """
-    Step 1: Generate a challenge for the user's authenticator.
+    Generate a challenge for the user's authenticator.
     """
     try:
         data = json.loads(request.body) if request.body else {}
         username = data.get('username')
         
-        # We allow passwordless login if credentials exist, so username is optional 
-        # but typically needed to lookup allowed credentials. 
-        # For this implementation, we'll support both discoverable and non-discoverable.
-        
         options = generate_authentication_options(
             rp_id=RP_ID,
-            allow_credentials=[], # Allow any credential (discoverable) if username not passed, or filter by user
+            allow_credentials=[], 
         )
         
         # Store challenge in session
@@ -50,7 +46,7 @@ def biometric_login_options(request):
 
 def biometric_login_verify(request):
     """
-    Step 2: Verify the cryptographic signature from the authenticator.
+    Verify the cryptographic signature from the authenticator.
     """
     try:
         data = json.loads(request.body)
@@ -64,20 +60,11 @@ def biometric_login_verify(request):
         if not challenge_b64:
              return JsonResponse({"error": "No challenge found"}, status=400)
              
-        # Find device by credential ID
-        # In a real scenario, we match the credential_id to find the user
         try:
             device = BiometricDevice.objects.get(credential_id=credential_id)
         except BiometricDevice.DoesNotExist:
              return JsonResponse({"error": "Unknown Credential"}, status=403)
              
-        # Mock Verification for this phase (Assuming we trust the client for now or implement full verify)
-        # To truly verify, we need the public key stored in device.public_key
-        # Here we attempt standard verification if keys are valid PEM/COSE
-        
-        # NOTE: For this specific request "Backend: verify assertions using the webauthn library",
-        # we will run the verify logic.
-        
         verification = verify_authentication_response(
             credential=AuthenticationCredential.parse_raw(json.dumps(data)),
             expected_challenge=base64.b64decode(challenge_b64),
@@ -96,6 +83,4 @@ def biometric_login_verify(request):
         return JsonResponse({"status": "ok", "redirect_url": "/portal/dashboard/"})
 
     except Exception as e:
-        # For Phase 4.5 demo, we might want to fail open or strictly print error.
-        # But per strict instructions, we verify. If verify fails (e.g. bad key format), return error.
         return JsonResponse({"error": f"Verification Failed: {str(e)}"}, status=400)

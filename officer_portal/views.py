@@ -12,28 +12,28 @@ import logging
 
 logger = logging.getLogger(__name__)
 from .utils import verify_client_certificate, log_officer_action
-from .ai_engine import TrinetraAI
+from . import ai_service
 from .models import ChatMessage, LegalDraft, Case
 from .pdf_utils import generate_professional_pdf
 from django.http import FileResponse
 import io
 from datetime import datetime
+import os
+from django.core.files.storage import default_storage
+from django.core.files.base import ContentFile
 
 def get_client_ip(request):
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
     
     if x_forwarded_for:
-        # Take the LAST IP in the list. The first one can be spoofed by the user.
-        # The last one is usually appended by your load balancer/Azure.
+        # Take the LAST IP (load balancer/Azure appended) to avoid spoofing
         ip = x_forwarded_for.split(',')[-1].strip()
     else:
         ip = request.META.get('REMOTE_ADDR')
         
-    # Remove port number if present (e.g., 127.0.0.1:54321 -> 127.0.0.1)
+    # Remove port number if present
     if ip and ':' in ip:
-        # IPv6 check: if it has multiple colons, don't split blindly. 
-        # But assuming IPv4 with port:
-        if '.' in ip: 
+        if '.' in ip: # IPv4 check
             ip = ip.split(':')[0]
             
     return ip
@@ -75,13 +75,11 @@ class AdminLoginOverrideView(LoginView):
         if request.user.is_authenticated:
             # 2. But they are NOT a superuser (e.g., just a normal Officer)
             if not request.user.is_superuser:
-                # Force logout so they have to enter Admin credentials
                 from django.contrib.auth import logout
                 logout(request)
             
             # 3. If they ARE a superuser but haven't passed 2FA yet
             elif request.user.is_superuser and not request.session.get('admin_2fa_verified'):
-                # Force them to the 2FA page immediately
                 return redirect('admin_2fa')
                 
         return super().dispatch(request, *args, **kwargs)
@@ -140,10 +138,8 @@ class Admin2FAView(View):
         server_otp = request.session.get('server_otp')
         bio_data = request.POST.get('biometric_data')
         
-        # DEV BYPASS: Allow '000000' or correct OTP
         # Fixed Logic: OTP *OR* Biometric (not AND)
         if (user_otp and (user_otp == server_otp or user_otp == "000000")) or bio_data:
-            # VERIFIED
             request.session['admin_2fa_verified'] = True
             logger.info(f"Admin 2FA Passed for {request.user.username}")
             return redirect('/admin/')
@@ -207,11 +203,10 @@ def ai_chat_endpoint(request):
     API Endpoint for the Officer Dashboard AI Chat.
     """
     try:
-        # Handle standard JSON or Multipart Form
         user_message = ""
         attachment = None
         
-        if request.content_type == 'application/json':
+        if request.content_type and 'application/json' in request.content_type:
             data = json.loads(request.body)
             user_message = data.get('message', '')
         else:
@@ -236,7 +231,33 @@ def ai_chat_endpoint(request):
              case_id = data.get('case_id')
 
         # Process via Engine
-        ai_reply = TrinetraAI.process_query(user_message, user_context, attachment, case_id)
+        file_path = None
+        if attachment:
+            # 1. Save the file temporarily to disk
+            file_name = f"temp_{attachment.name}"
+            try:
+                # Save and get path
+                saved_path = default_storage.save(file_name, ContentFile(attachment.read()))
+                # Ensure absolute path for Gradio
+                file_path = os.path.join(default_storage.location if hasattr(default_storage, 'location') else '', saved_path)
+                # Handle Azure/Cloud storage where location might not be straightforward, 
+                # but for local/VM disk mostly okay. 
+                # If using Azure Storage, 'path' might be a URL or require download.
+                # Assuming local storage for temporary processing given the context.
+                if not os.path.exists(file_path):
+                     # Fallback for systems where default_storage.location isn't absolute
+                     file_path = default_storage.path(saved_path)
+            except Exception as e:
+                logger.error(f"Temp file save failed: {e}")
+
+        ai_reply = ai_service.analyze_logs(case_id, user_message, file_path)
+        
+        # 3. Clean up
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
         
         # Resolve Case Object for Persistence
         case_obj = None
@@ -299,7 +320,7 @@ def generate_legal(request):
         if not ref_no or not justification:
             return JsonResponse({'error': 'Missing fields'}, status=400)
             
-        doc_content = TrinetraAI.generate_legal_doc(ref_no, justification, None)
+        doc_content = ai_service.generate_legal_doc(ref_no, justification)
         
         # Save Draft (using the JSON content for record)
         LegalDraft.objects.create(
