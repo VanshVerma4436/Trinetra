@@ -101,16 +101,12 @@ DEBUG = str(os.environ.get('DEBUG', 'False')).lower() in ['true', '1', 't']
 # Uses SQLite by default. If DATABASE_URL is present, utilizes it (PostgreSQL ready).
 if 'DATABASE_URL' in os.environ:
     DATABASES = {
-        'default': dj_database_url.config(conn_max_age=600, ssl_require=True)
+        'default': dj_database_url.config(
+            # CHANGE: Set to 0 to prevent "SSL connection closed unexpectedly" errors
+            conn_max_age=0, 
+            ssl_require=True
+        )
     }
-else:
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
-        }
-    }
-
 # 3. Static Files
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'

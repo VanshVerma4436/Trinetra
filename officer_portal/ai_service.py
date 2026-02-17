@@ -7,23 +7,22 @@ logger = logging.getLogger(__name__)
 
 # CONFIGURATION
 HF_TOKEN = os.getenv("HF_API_TOKEN")
-SPACE_URL = os.getenv("TRINETRA_AI_NODE", "https://vverma4436-legal-log-engine.hf.space/")
+# 1. FIX THE URL FORMAT
+# The .rstrip('/') removes any trailing slash to prevent double-slash errors
+SPACE_URL = os.getenv("TRINETRA_AI_NODE", "https://vverma4436-legal-log-engine.hf.space").rstrip('/')
 
 def get_ai_client():
     if not HF_TOKEN:
-         logger.error("HF_API_TOKEN is missing in .env")
-         raise ValueError("HF_API_TOKEN not configured.")
+         logger.warning("HF_API_TOKEN is missing. Attempting public connection.")
+         return Client(SPACE_URL) # Public mode
     
     try:
-        # Try passing token explicitly (newer versions)
-        return Client(SPACE_URL, hf_token=HF_TOKEN)
-    except TypeError:
-        # Fallback for older versions or different signature
-        logger.warning("Client does not accept hf_token, trying with headers or plain connection.")
+        # Try the modern way
+        return Client(SPACE_URL, hf_token=HF_TOKEN, verbose=False)
+    except Exception:
+        # Fallback: Some versions prefer headers or no token for public spaces
+        logger.info("Standard auth failed. Switching to header-based auth.")
         return Client(SPACE_URL, headers={"Authorization": f"Bearer {HF_TOKEN}"})
-    except Exception as e:
-        logger.error(f"Failed to connect to AI Client: {e}")
-        raise e
 
 # --- API Endpoint 1: Case Manager ---
 def fetch_or_create_case(case_id, justification=None):
