@@ -5,6 +5,7 @@ import json
 import time
 
 logger = logging.getLogger(__name__)
+logger.info("Initializing Trinetra AI Service v2.1 - Positional Args")
 
 HF_TOKEN = os.getenv("HF_API_TOKEN")
 SPACE_URL = os.getenv("TRINETRA_AI_NODE", "VVerma4436/Legal-Log-Engine")
