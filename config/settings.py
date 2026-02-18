@@ -93,23 +93,11 @@ SESSION_COOKIE_AGE = 300 # 5 Minutes Auto-Logout
 # DATABASE & CLOUD CONFIGURATION
 # ==============================================================================
 
-# 1. Debug Mode
-DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
-
-# [FIX 1] Security Hosts
-ALLOWED_HOSTS = ['*']  # Allows Azure URLs. For stricter security, list your specific azurewebsites.net URL.
-
-# [FIX 2] CSRF Trust (Required for Forms/Login on Azure)
-CSRF_TRUSTED_ORIGINS = [
-    'https://*.azurewebsites.net',
-    'https://*.onmicrosoft.com'
-]
-
-# [FIX 3] Database Configuration (Hybrid: NeonDB on Prod, SQLite on Local)
-if os.getenv('DATABASE_URL'):
+# 1. Database
+if os.environ.get('DATABASE_URL'):
     DATABASES = {
         'default': dj_database_url.config(
-            default=os.getenv('DATABASE_URL'),
+            default=os.environ.get('DATABASE_URL'),
             conn_max_age=600,
             ssl_require=True
         )
@@ -122,14 +110,39 @@ else:
         }
     }
 
-# 3. Static Files
+# 2. Static Files
 STATIC_ROOT = BASE_DIR / 'staticfiles'
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
-# 4. Security Logic
+# 3. Security & Azure Networking [CRITICAL FIXES]
+# Force trust for Azure's SSL handling
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# Allow all Azure domains
+ALLOWED_HOSTS = ['*']
+
+# [CRITICAL] Trust Azure for Login Forms (Fixes the Loop)
+CSRF_TRUSTED_ORIGINS = [
+    'https://*.azurewebsites.net',
+    'https://trinetra.azurewebsites.net',
+    'http://localhost:8000',
+    'http://127.0.0.1:8000'
+]
+
+# Production Toggles
+DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
+
 if not DEBUG:
-    # --- PRODUCTION MODE ---
-    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
     SECURE_SSL_REDIRECT = True
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
+    X_FRAME_OPTIONS = 'SAMEORIGIN'
+else:
+    SECURE_SSL_REDIRECT = False
+    SESSION_COOKIE_SECURE = False
+    CSRF_COOKIE_SECURE = False
+
+# Login Config
+LOGIN_URL = 'portal_login'
+LOGIN_REDIRECT_URL = 'officer_dashboard'
+LOGOUT_REDIRECT_URL = 'portal_login'
