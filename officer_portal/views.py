@@ -14,34 +14,19 @@ import os
 import random
 import io
 
-# --- CORRECTED IMPORTS ---
-
-# 1. Models from THIS App (officer_portal)
+# --- [FIXED IMPORTS] ---
+# 1. Models from THIS app
 from .models import Case, ChatMessage
-# (Only import Evidence if you actually created that class in officer_portal/models.py.
-#  If not, remove 'Evidence' from the import below to stop the crash.)
-try:
-    from .models import Evidence
-except ImportError:
-    pass # Skip if Evidence model is missing
-
-# 2. Models from AUTHENTICATION App
+# 2. Models from OTHER apps (Authentication & Audit)
 from authentication.models import OfficerProfile
-
-# 3. Models from AUDIT_LOGS App
-# We try to import it as 'AuditLog'. If your model is named 'ImmutableLog', we alias it.
 try:
-    from audit_logs.models import AuditLog
-except ImportError:
     from audit_logs.models import ImmutableLog as AuditLog
-from django.contrib.auth.views import LoginView
-from django.urls import reverse_lazy
-from django.contrib.auth.mixins import LoginRequiredMixin
-from django.views.generic import View, TemplateView
+except ImportError:
+    # Fallback if model is named AuditLog instead of ImmutableLog
+    from audit_logs.models import AuditLog
 
-# AI Service Integration
-from . import ai_service
-from .ai_engine import TrinetraAI  # Ensure this is imported
+# Import AI Engine
+from .ai_engine import TrinetraAI
 
 # PDF Generation
 from reportlab.pdfgen import canvas
@@ -145,46 +130,40 @@ def officer_dashboard(request):
     }
     return render(request, 'officer_portal/dashboard.html', context)
 
+# --- [FIXED CHAT ENDPOINT] ---
 @login_required
 @require_POST
 def ai_chat_endpoint(request):
     """
-    API Endpoint for the Officer Dashboard AI Chat.
+    Main API for the Officer Chat.
     """
     try:
         user_message = ""
+        case_id = None
         attachment = None
-        case_id = None  # Initialize
         
-        # 1. Parse Request Data (JSON vs Form)
+        # 1. Parse JSON vs Form Data
         if request.content_type and 'application/json' in request.content_type:
             data = json.loads(request.body)
             user_message = data.get('message', '')
             case_id = data.get('case_id')
         else:
-            # Form Data
             user_message = request.POST.get('message', '')
             case_id = request.POST.get('case_id')
             if 'attachment' in request.FILES:
                 attachment = request.FILES['attachment']
         
         if not user_message and not attachment:
-            return JsonResponse({'response': "Empty transmission received."}, status=400)
+            return JsonResponse({'response': "Empty transmission."}, status=400)
 
-        # 2. Prepare Context
-        user_context = {
-            'username': request.user.username,
-            'is_staff': request.user.is_staff,
-            'id': request.user.id
-        }
-        
-        # 3. CALL THE ENGINE (The "Brain")
-        # [CRITICAL FIX] Use TrinetraAI.process_query instead of calling ai_service directly.
-        # This ensures the case is created in NeonDB before we try to analyze logs.
+        # 2. Context
+        user_context = {'username': request.user.username, 'id': request.user.id}
+
+        # 3. Call AI Engine (Passes Case ID correctly)
         ai_reply = TrinetraAI.process_query(user_message, user_context, attachment, case_id=case_id)
         
-        # 4. Persistence (Save to Local Django DB)
-        # Resolve Case Object if possible
+        # 4. Save to Local DB (Azure)
+        # We try to link to a Case object if it exists
         case_obj = None
         if case_id:
             case_obj = Case.objects.filter(case_no=case_id).first()
@@ -199,10 +178,8 @@ def ai_chat_endpoint(request):
         
         return JsonResponse({'response': ai_reply})
 
-    except json.JSONDecodeError:
-        return JsonResponse({'response': "Invalid Protocol. JSON required."}, status=400)
     except Exception as e:
-        logger.error(f"Chat Endpoint Error: {e}")
+        logger.error(f"Chat Error: {e}")
         return JsonResponse({'response': f"System Error: {str(e)}"}, status=500)
 
 @login_required

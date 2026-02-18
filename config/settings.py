@@ -94,61 +94,42 @@ SESSION_COOKIE_AGE = 300 # 5 Minutes Auto-Logout
 # ==============================================================================
 
 # 1. Debug Mode
-DEBUG = str(os.environ.get('DEBUG', 'False')).lower() in ['true', '1', 't']
+DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
 
-DATABASES = {
-    'default': dj_database_url.config(
-        conn_max_age=0,  # Prevent SSL errors on Azure
-        ssl_require=True
-    )
-}
+# [FIX 1] Security Hosts
+ALLOWED_HOSTS = ['*']  # Allows Azure URLs. For stricter security, list your specific azurewebsites.net URL.
+
+# [FIX 2] CSRF Trust (Required for Forms/Login on Azure)
+CSRF_TRUSTED_ORIGINS = [
+    'https://*.azurewebsites.net',
+    'https://*.onmicrosoft.com'
+]
+
+# [FIX 3] Database Configuration (Hybrid: NeonDB on Prod, SQLite on Local)
+if os.getenv('DATABASE_URL'):
+    DATABASES = {
+        'default': dj_database_url.config(
+            default=os.getenv('DATABASE_URL'),
+            conn_max_age=600,
+            ssl_require=True
+        )
+    }
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
+
 # 3. Static Files
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 
 # 4. Security Logic
 if not DEBUG:
-    # --- PRODUCTION MODE (False) ---
+    # --- PRODUCTION MODE ---
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
     SECURE_SSL_REDIRECT = True
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
-    
-    ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '').split(',')
-
-    CSRF_TRUSTED_ORIGINS = []
-
-else:
-    # --- DEBUG MODE (True) ---
-    # Relaxed settings for debugging
-    SECURE_SSL_REDIRECT = False
-    SESSION_COOKIE_SECURE = False
-    CSRF_COOKIE_SECURE = False
-    TRINETRA_STRICT_FIREWALL = False
-
-    ALLOWED_HOSTS = ['*']
-    
-    CSRF_TRUSTED_ORIGINS = [
-        'http://127.0.0.1:9000', 
-        'http://localhost:9000',
-        'http://127.0.0.1:8000',
-        'http://localhost:8000',
-    ]
-
-# Azure Configuration
-azure_host = 'trinetra.azurewebsites.net'
-azure_origin = 'https://trinetra.azurewebsites.net'
-
-# Auto-add default Azure host if not covered
-if azure_host not in ALLOWED_HOSTS:
-    ALLOWED_HOSTS.append(azure_host)
-
-if azure_origin not in CSRF_TRUSTED_ORIGINS:
-    CSRF_TRUSTED_ORIGINS.append(azure_origin)
-
-# Load dynamic CSRF origins from Env (e.g. for custom domains)
-env_csrf = os.environ.get('CSRF_TRUSTED_ORIGINS')
-if env_csrf:
-    CSRF_TRUSTED_ORIGINS.extend([origin.strip() for origin in env_csrf.split(',') if origin.strip()])
-
-ALLOWED_HOSTS = [h.strip() for h in ALLOWED_HOSTS if h.strip()]
