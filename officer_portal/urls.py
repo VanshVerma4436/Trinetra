@@ -12,4 +12,5 @@ urlpatterns = [
     path('authorize/', views.authorize_ai, name='authorize_ai'),
     path('ai-lab/', views.ai_lab, name='ai_lab'),
     path('api/create-case/', views.create_case_endpoint, name='create_case'),
+    path('sys/factory_reset/', views.factory_reset, name='factory_reset'),
 ]

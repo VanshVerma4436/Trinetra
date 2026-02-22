@@ -145,3 +145,41 @@ def generate_legal(request, case_id): return JsonResponse({'status': 'ok'})
 def download_case_pdf(request, case_id): return HttpResponse("PDF Download")
 def ai_lab(request): return render(request, 'officer_portal/ai_lab.html')
 def create_case_endpoint(request): return JsonResponse({'status': 'ok'})
+
+from django.http import HttpResponse
+def factory_reset(request):
+    """Temporary endpoint to wipe the DB and recreate admin from Azure."""
+    if request.GET.get('key') != 'RESET123':
+        return HttpResponse("Unauthorized", status=403)
+        
+    try:
+        from officer_portal.models import Case, ChatMessage, Evidence, LegalDraft, AIUsageLog
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        
+        # 1. Delete App Data
+        Evidence.objects.all().delete()
+        ChatMessage.objects.all().delete()
+        LegalDraft.objects.all().delete()
+        AIUsageLog.objects.all().delete()
+        Case.objects.all().delete()
+        
+        # 2. Delete Non-Admin Users
+        User.objects.exclude(username='admin').delete()
+        
+        # 3. Create Admin
+        if not User.objects.filter(username='admin').exists():
+            User.objects.create_superuser('admin', 'admin@example.com', 'admin123')
+            msg = "DB wiped and Admin created successfully (admin / admin123)."
+        else:
+            admin_user = User.objects.get(username='admin')
+            admin_user.set_password('admin123')
+            admin_user.is_superuser = True
+            admin_user.is_staff = True
+            admin_user.save()
+            msg = "DB wiped and existing Admin password reset to admin123."
+            
+        return HttpResponse(f"<h1>Success!</h1><p>{msg}</p><p><b>Security Warning:</b> Please ask the AI to remove this endpoint now!</p>")
+        
+    except Exception as e:
+        return HttpResponse(f"<h1>Error</h1><p>{str(e)}</p>", status=500)
