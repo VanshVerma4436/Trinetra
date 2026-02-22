@@ -15,7 +15,7 @@ def get_ai_client():
          logger.error("HF_API_TOKEN is missing in .env")
          raise ValueError("HF_API_TOKEN not configured.")
     try:
-        return Client(SPACE_URL, hf_token=HF_TOKEN)
+        return Client(SPACE_URL, token=HF_TOKEN)
     except Exception as e:
         logger.error(f"Failed to connect to AI Client: {e}")
         raise e
