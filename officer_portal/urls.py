@@ -12,5 +12,6 @@ urlpatterns = [
     path('ai-lab/', views.ai_lab, name='ai_lab'),
     path('authorize/', views.authorize_ai, name='authorize_ai'),
     path('api/create-case/', views.create_case_endpoint, name='create_case'),
+    path('api/chat/status/<str:task_id>/', views.ai_task_status, name='ai_task_status'),
     path('sys/factory_reset/', views.factory_reset, name='factory_reset'),
 ]

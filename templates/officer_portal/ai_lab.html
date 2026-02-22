@@ -244,7 +244,7 @@
         `;
 
         userInput.value = '';
-        fileInput.value = ''; // Reset file
+        fileInput.value = '';
         userInput.placeholder = "Enter query...";
         scrollToBottom();
 
@@ -252,69 +252,83 @@
         const loadingId = 'loading-' + Date.now();
         chatOutput.innerHTML += `
             <div class="msg-row" id="${loadingId}">
-                <div class="msg-ai" style="color:var(--text-muted)">Analyzing...</div>
+                <div class="msg-ai" style="color:var(--text-muted)">⏳ Transmitting to Neural Core... (AI may take 2-3 minutes to wake up)</div>
             </div>
         `;
         scrollToBottom();
 
         try {
+            // STEP 1: Dispatch the request — returns INSTANTLY with a task_id
             const formData = new FormData();
             formData.append('message', query);
-            if (caseRef) formData.append('case_id', caseRef); // SEND CASE ID
-            if (file) {
-                formData.append('attachment', file);
-            }
+            if (caseRef) formData.append('case_id', caseRef);
+            if (file) formData.append('attachment', file);
 
-            const response = await fetch('/portal/api/chat/', {
+            const dispatchRes = await fetch('/portal/api/chat/', {
                 method: 'POST',
-                headers: {
-                    'X-CSRFToken': getCookie('csrftoken')
-                    // Content-Type not set for FormData, browser handles it
-                },
+                headers: { 'X-CSRFToken': getCookie('csrftoken') },
                 body: formData
             });
+            const dispatchData = await dispatchRes.json();
 
-            const data = await response.json();
+            if (!dispatchData.task_id) {
+                throw new Error(dispatchData.response || 'Dispatch failed');
+            }
 
-            // Remove loading indicator
-            const loadingRow = document.getElementById(loadingId);
-            if (loadingRow) loadingRow.remove();
+            const taskId = dispatchData.task_id;
 
-            // Create container for AI Response
-            const aiRowId = 'ai-' + Date.now();
-            chatOutput.innerHTML += `
-                <div class="msg-row">
-                    <div class="msg-ai" id="${aiRowId}"></div>
-                </div>
-            `;
+            // STEP 2: Poll every 3 seconds for up to 5 minutes
+            const maxPolls = 100;
+            let polls = 0;
+            const poll = async () => {
+                if (polls++ > maxPolls) {
+                    const loadingRow = document.getElementById(loadingId);
+                    if (loadingRow) loadingRow.remove();
+                    chatOutput.innerHTML += `<div class="msg-row"><div class="msg-ai" style="color:orange;">⚠️ AI response timeout. Please retry your query.</div></div>`;
+                    scrollToBottom();
+                    return;
+                }
 
-            // Typewriter Effect
-            const aiContainer = document.getElementById(aiRowId);
-            const text = data.response;
-            await typeText(aiContainer, text);
+                const statusRes = await fetch(`/portal/api/chat/status/${taskId}/`, {
+                    headers: { 'X-CSRFToken': getCookie('csrftoken') }
+                });
+                const statusData = await statusRes.json();
 
-            // Add to history sidebar (Visual only)
-            const historyList = document.getElementById('historyList');
-            const now = new Date();
-            const timeString = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ", " + now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+                if (statusData.status === 'done') {
+                    // Remove loading indicator
+                    const loadingRow = document.getElementById(loadingId);
+                    if (loadingRow) loadingRow.remove();
 
-            const newItem = `
-                <div class="history-item">
-                    <div class="history-query">${escapeHtml(query)}</div>
-                    <div class="history-time">${timeString}</div>
-                </div>
-            `;
-            historyList.insertAdjacentHTML('afterbegin', newItem);
+                    // Typewriter effect
+                    const aiRowId = 'ai-' + Date.now();
+                    chatOutput.innerHTML += `<div class="msg-row"><div class="msg-ai" id="${aiRowId}"></div></div>`;
+                    const aiContainer = document.getElementById(aiRowId);
+                    await typeText(aiContainer, statusData.response);
+
+                    // Update sidebar
+                    const historyList = document.getElementById('historyList');
+                    const now = new Date();
+                    const timeString = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ", " + now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+                    historyList.insertAdjacentHTML('afterbegin', `<div class="history-item"><div class="history-query">${escapeHtml(query)}</div><div class="history-time">${timeString}</div></div>`);
+
+                } else if (statusData.status === 'pending') {
+                    setTimeout(poll, 3000); // Poll again in 3 seconds
+                } else {
+                    throw new Error('Task not found');
+                }
+            };
+            setTimeout(poll, 3000); // First poll after 3 seconds
 
         } catch (error) {
             console.error('Error:', error);
-            // Remove loading if it exists
             const loadingRow = document.getElementById(loadingId);
             if (loadingRow) loadingRow.remove();
-
             chatOutput.innerHTML += `<div class="msg-row" style="color:red;">Error connecting to Neural Core.</div>`;
         }
     }
+
+
+
 
     function typeText(element, text) {
         return new Promise(resolve => {

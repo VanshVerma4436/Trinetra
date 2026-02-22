@@ -14,6 +14,8 @@ from django.conf import settings
 import json
 import logging
 import io
+import uuid
+import threading
 
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
@@ -100,15 +102,25 @@ def officer_dashboard(request):
         'user': request.user
     })
 
-# --- AI CHAT ENDPOINT ---
+# --- BACKGROUND TASK STORE (in-memory, per-process) ---
+# Stores results from AI calls so browsers can poll for them.
+_ai_task_store = {}
+
+# --- AI CHAT ENDPOINT (NON-BLOCKING) ---
 @login_required
 @require_POST
 def ai_chat_endpoint(request):
+    """
+    Immediately returns a task_id. The AI call runs in a background thread.
+    The browser polls /api/chat/status/<task_id>/ until the result is ready.
+    This avoids Azure's ~230-second proxy connection timeout.
+    """
     try:
         user_message = ""
         case_id = None
         attachment = None
-        
+        temp_path = None
+
         if request.content_type and 'application/json' in request.content_type:
             data = json.loads(request.body)
             user_message = data.get('message', '')
@@ -118,27 +130,74 @@ def ai_chat_endpoint(request):
             case_id = request.POST.get('case_id')
             if 'attachment' in request.FILES:
                 attachment = request.FILES['attachment']
-        
+
         if not user_message and not attachment:
             return JsonResponse({'response': "Empty transmission."}, status=400)
 
-        user_context = {'username': request.user.username, 'id': request.user.id}
-        ai_reply = TrinetraAI.process_query(user_message, user_context, attachment, case_id=case_id)
-        
-        # Save
-        case_obj = Case.objects.filter(case_no=case_id).first() if case_id else None
-        ChatMessage.objects.create(
-            user=request.user,
-            query=user_message,
-            response=ai_reply,
-            file_attachment=attachment,
-            case=case_obj
-        )
-        return JsonResponse({'response': ai_reply})
+        # Save uploaded file to a temp path so the background thread can read it
+        if attachment:
+            import tempfile, os
+            suffix = os.path.splitext(attachment.name)[1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                for chunk in attachment.chunks():
+                    tmp.write(chunk)
+                temp_path = tmp.name
+
+        task_id = str(uuid.uuid4())
+        _ai_task_store[task_id] = {'status': 'pending', 'response': None}
+
+        user_id = request.user.id
+        username = request.user.username
+
+        def run_ai():
+            try:
+                from django import db
+                db.close_old_connections()  # Fresh DB connection in thread
+                from .ai_service import analyze_logs
+                ai_reply = analyze_logs(case_id or f"CMD-USER-{user_id}", user_message, temp_path)
+
+                # Save to DB from the background thread
+                from django.contrib.auth import get_user_model
+                User = get_user_model()
+                user_obj = User.objects.get(pk=user_id)
+                case_obj = Case.objects.filter(case_no=case_id).first() if case_id else None
+                ChatMessage.objects.create(
+                    user=user_obj,
+                    query=user_message,
+                    response=ai_reply,
+                    case=case_obj
+                )
+                _ai_task_store[task_id] = {'status': 'done', 'response': ai_reply}
+            except Exception as e:
+                logger.error(f"Background AI Error: {e}")
+                _ai_task_store[task_id] = {'status': 'done', 'response': f"System Error: {str(e)}"}
+            finally:
+                if temp_path and os.path.exists(temp_path):
+                    os.remove(temp_path)
+                db.close_old_connections()
+
+        thread = threading.Thread(target=run_ai, daemon=True)
+        thread.start()
+
+        return JsonResponse({'task_id': task_id, 'status': 'pending'})
 
     except Exception as e:
-        logger.error(f"Chat Error: {e}")
+        logger.error(f"Chat Dispatch Error: {e}")
         return JsonResponse({'response': f"System Error: {str(e)}"}, status=500)
+
+
+# --- AI TASK STATUS POLL ---
+@login_required
+def ai_task_status(request, task_id):
+    """Browser polls this every 3s to check if the AI has finished."""
+    task = _ai_task_store.get(task_id)
+    if not task:
+        return JsonResponse({'status': 'not_found'}, status=404)
+    if task['status'] == 'done':
+        # Clean up memory after delivering the result
+        _ai_task_store.pop(task_id, None)
+        return JsonResponse({'status': 'done', 'response': task['response']})
+    return JsonResponse({'status': 'pending'})
 
 @login_required
 @require_POST
