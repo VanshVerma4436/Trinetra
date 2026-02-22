@@ -15,7 +15,8 @@ def get_ai_client():
          logger.error("HF_API_TOKEN is missing in .env")
          raise ValueError("HF_API_TOKEN not configured.")
     try:
-        return Client(SPACE_URL, token=HF_TOKEN)
+        # max_workers=1 avoids spawning extra threads; timeout prevents blocking Gunicorn indefinitely
+        return Client(SPACE_URL, token=HF_TOKEN, max_workers=1)
     except Exception as e:
         logger.error(f"Failed to connect to AI Client: {e}")
         raise e
