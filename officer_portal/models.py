@@ -71,3 +71,13 @@ class Evidence(models.Model):
 
     def __str__(self):
         return f"Evidence for {self.case.case_no} by {self.uploaded_by.username}"
+
+class AITask(models.Model):
+    """Stores background AI task results so any Gunicorn worker can retrieve them."""
+    task_id = models.CharField(max_length=100, unique=True, db_index=True)
+    status = models.CharField(max_length=20, default='pending')  # 'pending' or 'done'
+    response = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Task {self.task_id[:8]}... [{self.status}]"

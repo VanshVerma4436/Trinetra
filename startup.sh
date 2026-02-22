@@ -10,7 +10,8 @@ python manage.py collectstatic --noinput
 python manage.py migrate
 
 # 4. Start the Server (Gunicorn)
-# --timeout 600 : AI requests to Hugging Face can take up to 2 minutes
-# --workers 2   : One worker serves web requests while the other waits for AI
-# --threads 4   : Handle multiple concurrent connections per worker
-gunicorn --bind=0.0.0.0:8000 --timeout 600 --workers 2 --threads 4 config.wsgi:application
+# CRITICAL: --workers 1 is required because _ai_task_store is an in-memory dict.
+# Multiple worker *processes* have separate memory; only threads within one process share it.
+# --threads 8 lets us handle 8 concurrent requests without blocking.
+# --timeout 600 allows AI requests to take up to 10 minutes.
+gunicorn --bind=0.0.0.0:8000 --timeout 600 --workers 1 --threads 8 config.wsgi:application

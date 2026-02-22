@@ -21,7 +21,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 
 # --- IMPORTS ---
-from .models import Case, ChatMessage, Evidence, LegalDraft, AIUsageLog
+from .models import Case, ChatMessage, Evidence, LegalDraft, AIUsageLog, AITask
 try:
     from authentication.models import OfficerProfile
 except ImportError:
@@ -102,10 +102,6 @@ def officer_dashboard(request):
         'user': request.user
     })
 
-# --- BACKGROUND TASK STORE (in-memory, per-process) ---
-# Stores results from AI calls so browsers can poll for them.
-_ai_task_store = {}
-
 # --- AI CHAT ENDPOINT (NON-BLOCKING) ---
 @login_required
 @require_POST
@@ -113,7 +109,7 @@ def ai_chat_endpoint(request):
     """
     Immediately returns a task_id. The AI call runs in a background thread.
     The browser polls /api/chat/status/<task_id>/ until the result is ready.
-    This avoids Azure's ~230-second proxy connection timeout.
+    Task stored in DB so any Gunicorn worker process can read the result.
     """
     try:
         user_message = ""
@@ -143,20 +139,21 @@ def ai_chat_endpoint(request):
                     tmp.write(chunk)
                 temp_path = tmp.name
 
+        # Create task record in DB (cross-worker safe)
         task_id = str(uuid.uuid4())
-        _ai_task_store[task_id] = {'status': 'pending', 'response': None}
+        AITask.objects.create(task_id=task_id, status='pending')
 
         user_id = request.user.id
-        username = request.user.username
 
         def run_ai():
+            import os
+            from django import db
+            db.close_old_connections()  # Fresh DB connection in thread
             try:
-                from django import db
-                db.close_old_connections()  # Fresh DB connection in thread
                 from .ai_service import analyze_logs
                 ai_reply = analyze_logs(case_id or f"CMD-USER-{user_id}", user_message, temp_path)
 
-                # Save to DB from the background thread
+                # Save chat history
                 from django.contrib.auth import get_user_model
                 User = get_user_model()
                 user_obj = User.objects.get(pk=user_id)
@@ -167,10 +164,11 @@ def ai_chat_endpoint(request):
                     response=ai_reply,
                     case=case_obj
                 )
-                _ai_task_store[task_id] = {'status': 'done', 'response': ai_reply}
+                # Store result in DB so any worker can read it
+                AITask.objects.filter(task_id=task_id).update(status='done', response=ai_reply)
             except Exception as e:
                 logger.error(f"Background AI Error: {e}")
-                _ai_task_store[task_id] = {'status': 'done', 'response': f"System Error: {str(e)}"}
+                AITask.objects.filter(task_id=task_id).update(status='done', response=f"System Error: {str(e)}")
             finally:
                 if temp_path and os.path.exists(temp_path):
                     os.remove(temp_path)
@@ -190,14 +188,18 @@ def ai_chat_endpoint(request):
 @login_required
 def ai_task_status(request, task_id):
     """Browser polls this every 3s to check if the AI has finished."""
-    task = _ai_task_store.get(task_id)
-    if not task:
-        return JsonResponse({'status': 'not_found'}, status=404)
-    if task['status'] == 'done':
-        # Clean up memory after delivering the result
-        _ai_task_store.pop(task_id, None)
-        return JsonResponse({'status': 'done', 'response': task['response']})
-    return JsonResponse({'status': 'pending'})
+    try:
+        task = AITask.objects.filter(task_id=task_id).first()
+        if not task:
+            return JsonResponse({'status': 'not_found'}, status=404)
+        if task.status == 'done':
+            response_text = task.response
+            task.delete()  # Clean up after delivering
+            return JsonResponse({'status': 'done', 'response': response_text})
+        return JsonResponse({'status': 'pending'})
+    except Exception as e:
+        logger.error(f"Task poll error: {e}")
+        return JsonResponse({'status': 'error', 'response': str(e)}, status=500)
 
 @login_required
 @require_POST
