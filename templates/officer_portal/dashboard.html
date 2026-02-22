@@ -250,7 +250,7 @@
                     </td>
                     <td style="padding:15px;">{{ case.status }}</td>
                     <td style="padding:15px; text-align:right;">
-                        <a href="{% url 'ai_lab' %}?case_id={{ case.case_no }}" style="
+                        <a href="javascript:void(0)" onclick="openComplianceModal('{{ case.case_no }}')" style="
                                display:inline-block; padding:8px 15px; 
                                background:linear-gradient(90deg, var(--neon-blue), transparent); 
                                border:1px solid var(--neon-blue); color:white; 
@@ -325,7 +325,7 @@
             <div style="margin-bottom:15px;">
                 <label style="color:var(--neon-green); display:block; font-size:12px; margin-bottom:5px;">COMPLAINT /
                     REFERENCE NO</label>
-                <input type="text" name="complaint_no" required
+                <input type="text" id="complianceCaseNo" name="complaint_no" required
                     style="width:100%; padding:10px; background:#111; border:1px solid #333; color:white; font-family:var(--font-code);">
             </div>
 
@@ -443,6 +443,16 @@
     }
 
     // --- CASE MANAGEMENT ---
+    function openComplianceModal(caseId) {
+        const input = document.getElementById('complianceCaseNo');
+        if (input) input.value = caseId;
+        document.getElementById('complianceModal').style.display = 'flex';
+    }
+
+    function closeComplianceModal() {
+        document.getElementById('complianceModal').style.display = 'none';
+    }
+
     function openCreateCaseModal() {
         document.getElementById('createCaseModal').style.display = 'flex';
     }
@@ -496,7 +506,7 @@
         btn.disabled = true;
 
         try {
-            const response = await fetch('/portal/api/create-case/', {
+            const response = await fetch("{% url 'create_case' %}", {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -526,6 +536,5 @@
             btn.disabled = false;
         }
     }
-</script>
 </script>
 {% endblock %}

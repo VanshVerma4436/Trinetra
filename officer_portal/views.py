@@ -2,7 +2,8 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth import login, logout, authenticate
 from django.contrib import messages
-from django.http import JsonResponse, FileResponse
+from django.http import JsonResponse, FileResponse, HttpResponseBadRequest, HttpResponseServerError, HttpResponse
+from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 # [CRITICAL FIX] This import was missing or shadowed on your server
@@ -18,7 +19,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 
 # --- IMPORTS ---
-from .models import Case, ChatMessage, Evidence, LegalDraft
+from .models import Case, ChatMessage, Evidence, LegalDraft, AIUsageLog
 try:
     from authentication.models import OfficerProfile
 except ImportError:
@@ -95,7 +96,7 @@ def custom_admin_logout(request):
 def officer_dashboard(request):
     recent_cases = Case.objects.filter(assigned_officer=request.user).order_by('-created_at')[:5]
     return render(request, 'officer_portal/dashboard.html', {
-        'recent_cases': recent_cases,
+        'cases': recent_cases,
         'user': request.user
     })
 
@@ -139,13 +140,167 @@ def ai_chat_endpoint(request):
         logger.error(f"Chat Error: {e}")
         return JsonResponse({'response': f"System Error: {str(e)}"}, status=500)
 
-# [FIX] Add missing stubs to prevent import errors if urls.py references them
-def authorize_ai(request): return JsonResponse({'status': 'ok'})
-def generate_legal(request, case_id): return JsonResponse({'status': 'ok'})
-def download_case_pdf(request, case_id): return HttpResponse("PDF Download")
-def ai_lab(request): return render(request, 'officer_portal/ai_lab.html')
-def create_case_endpoint(request): return JsonResponse({'status': 'ok'})
+@login_required
+@require_POST
+def authorize_ai(request):
+    """
+    Handles the security protocol modal to log AI usage before entering the WORMHOLE.
+    """
+    complaint_no = request.POST.get('complaint_no')
+    justification = request.POST.get('justification')
+    
+    if complaint_no and justification:
+        AIUsageLog.objects.create(
+            user=request.user,
+            complaint_no=complaint_no,
+            justification=justification
+        )
+        # Redirect to the AI Lab with the case ID to load history
+        return redirect(f"{reverse('ai_lab')}?case_id={complaint_no}")
+    
+    return HttpResponseBadRequest("Missing required compliance fields.")
 
+@login_required
+def generate_legal(request):
+    """
+    Generates a PDF legal document using the Trinetra AI and returns it to the user.
+    """
+    case_id = request.GET.get('case_id')
+    if not case_id:
+        return HttpResponseBadRequest("Missing case ID.")
+        
+    case = get_object_or_404(Case, case_no=case_id)
+    
+    # 1. Ask AI to draft the document based on case details
+    instruction = f"Draft an official legal summary for case {case.case_no}. Suspect: {case.suspect_name}. Details: {case.description}"
+    ai_response = TrinetraAI.generate_legal_doc(case.case_no, instruction)
+    
+    if isinstance(ai_response, dict) and "error" in ai_response:
+        return HttpResponseServerError(f"AI Generation Failed: {ai_response['error']}")
+        
+    # Example AI response JSON structure we expect: 
+    # {'title': '...', 'facts': '...', 'legal_analysis': '...', 'conclusion': '...'}
+    
+    title = ai_response.get('title', f"Legal Report - {case.case_no}")
+    facts = ai_response.get('facts', case.description)
+    law = ai_response.get('legal_analysis', 'Awaiting full AI analysis.')
+    conclusion = ai_response.get('conclusion', 'Investigation ongoing.')
+    
+    # Save the draft history 
+    draft = LegalDraft.objects.create(
+        user=request.user,
+        reference_no=case.case_no,
+        justification="System Generated via WORMHOLE PDF request",
+        generated_content=f"TITLE: {title}\nFACTS: {facts}\nLAW: {law}\nCONCLUSION: {conclusion}"
+    )
+    
+    # 2. Convert to PDF
+    import io
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import letter
+    from datetime import datetime
+    
+    buffer = io.BytesIO()
+    p = canvas.Canvas(buffer, pagesize=letter)
+    
+    # Header
+    p.setFont("Helvetica-Bold", 16)
+    p.drawString(50, 750, "TRINETRA SECURE PORTAL - OFFICIAL LEGAL DRAFT")
+    p.setFont("Helvetica", 10)
+    p.drawString(50, 735, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Officer: {request.user.username}")
+    p.line(50, 725, 550, 725)
+    
+    # Content
+    y = 700
+    p.setFont("Helvetica-Bold", 12)
+    p.drawString(50, y, f"Ref No: {draft.reference_no}")
+    y -= 20
+    p.drawString(50, y, f"Subject: {title}")
+    y -= 30
+    
+    p.setFont("Helvetica-Oblique", 11)
+    p.drawString(50, y, "1. Statement of Facts:")
+    y -= 15
+    p.setFont("Helvetica", 10)
+    
+    # Simple word wrap logic for PDF
+    import textwrap
+    for line in textwrap.wrap(facts, 90):
+        p.drawString(50, y, line)
+        y -= 15
+        if y < 50:
+            p.showPage()
+            y = 750
+            p.setFont("Helvetica", 10)
+    
+    y -= 15
+    p.setFont("Helvetica-Oblique", 11)
+    p.drawString(50, y, "2. Legal Analysis:")
+    y -= 15
+    p.setFont("Helvetica", 10)
+    for line in textwrap.wrap(law, 90):
+        p.drawString(50, y, line)
+        y -= 15
+        if y < 50:
+            p.showPage()
+            y = 750
+            p.setFont("Helvetica", 10)
+            
+    y -= 15
+    p.setFont("Helvetica-Oblique", 11)
+    p.drawString(50, y, "3. Conclusion:")
+    y -= 15
+    p.setFont("Helvetica", 10)
+    for line in textwrap.wrap(conclusion, 90):
+        p.drawString(50, y, line)
+        y -= 15
+        if y < 50:
+            p.showPage()
+            y = 750
+            p.setFont("Helvetica", 10)
+            
+    p.showPage()
+    p.save()
+    buffer.seek(0)
+    
+    response = HttpResponse(buffer, content_type='application/pdf')
+    response['Content-Disposition'] = f'attachment; filename="Legal_Opinion_{case.case_no}.pdf"'
+    return response
+
+@login_required
+def ai_lab(request):
+    case_id = request.GET.get('case_id', '')
+    context = {
+        'case_id': case_id
+    }
+    return render(request, 'officer_portal/ai_lab.html', context)
+@login_required
+@require_POST
+def create_case_endpoint(request):
+    try:
+        data = json.loads(request.body)
+        suspect_name = data.get('suspect_name', 'Unknown')
+        description = data.get('description', '')
+        priority = data.get('priority', 'MEDIUM')
+        
+        from django.utils.crypto import get_random_string
+        case_no = f"TRN-{get_random_string(6).upper()}"
+        
+        case = Case.objects.create(
+            case_no=case_no,
+            suspect_name=suspect_name,
+            description=description,
+            priority=priority,
+            assigned_officer=request.user,
+            status='OPEN'
+        )
+        return JsonResponse({'status': 'ok', 'case_no': case.case_no})
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=400)
+
+def officer_logout(request):
+    logout(request)
+    return redirect('portal_login')
 from django.http import HttpResponse
 def factory_reset(request):
     """Temporary endpoint to wipe the DB and recreate admin from Azure."""

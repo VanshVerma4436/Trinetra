@@ -52,7 +52,16 @@ def generate_legal_doc(case_id, facts):
             user_instruction=facts, 
             api_name="/draft_legal_json"
         )
-        return json.loads(json_str)
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            logger.warning("AI returned malformed JSON. Falling back to raw text.")
+            return {
+                "title": f"Raw Draft - Case {case_id}",
+                "facts": "AI output could not be formatted correctly. Raw text below:",
+                "legal_analysis": json_str,
+                "conclusion": "Manual review required."
+            }
     except Exception as e:
         logger.error(f"AI Legal Doc Error: {e}")
         return {"error": str(e)}
