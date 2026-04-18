@@ -133,7 +133,7 @@ CONN_HEALTH_CHECKS = True
 
 # 2. Static Files
 STATIC_ROOT = BASE_DIR / 'staticfiles'
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 
 # 3. Security & Azure Networking [CRITICAL FIXES]
 # Force trust for Azure's SSL handling
