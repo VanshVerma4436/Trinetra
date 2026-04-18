@@ -115,7 +115,6 @@ if os.environ.get('DATABASE_URL'):
         'keepalives_interval': 10,    # Retry keepalive every 10s
         'keepalives_count': 5,        # Give up after 5 failed keepalives
         'connect_timeout': 30,        # Increased to 30s so NeonDB can wake up
-        'options': '-c statement_timeout=30000',  # Kill queries after 30s (prevents hung connections)
     })
 else:
     DATABASES = {
