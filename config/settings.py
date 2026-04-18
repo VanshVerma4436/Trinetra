@@ -114,7 +114,7 @@ if os.environ.get('DATABASE_URL'):
         'keepalives_idle': 30,        # Send keepalive after 30s idle (NeonDB timeout is ~60s)
         'keepalives_interval': 10,    # Retry keepalive every 10s
         'keepalives_count': 5,        # Give up after 5 failed keepalives
-        'connect_timeout': 10,        # Don't hang forever on initial connect
+        'connect_timeout': 30,        # Increased to 30s so NeonDB can wake up
         'options': '-c statement_timeout=30000',  # Kill queries after 30s (prevents hung connections)
     })
 else:
@@ -144,6 +144,7 @@ ALLOWED_HOSTS = ['*']
 
 # [CRITICAL] Trust Azure for Login Forms (Fixes the Loop)
 CSRF_TRUSTED_ORIGINS = [
+    'https://*.vercel.app',
     'https://*.azurewebsites.net',
     'https://trinetra.azurewebsites.net',
     'http://localhost:8000',

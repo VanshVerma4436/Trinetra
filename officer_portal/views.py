@@ -31,7 +31,7 @@ try:
 except ImportError:
     from audit_logs.models import ImmutableLog as AuditLog
 
-from .ai_engine import TrinetraAI
+from . import ai_service
 
 logger = logging.getLogger(__name__)
 
@@ -253,7 +253,7 @@ def generate_legal(request):
     
     # 1. Ask AI to draft the document based on case details
     instruction = f"Draft an official legal summary for case {case.case_no}. Suspect: {case.suspect_name}. Details: {case.description}"
-    ai_response = TrinetraAI.generate_legal_doc(case.case_no, instruction)
+    ai_response = ai_service.generate_legal_doc(case.case_no, instruction)
     
     if isinstance(ai_response, dict) and "error" in ai_response:
         return HttpResponseServerError(f"AI Generation Failed: {ai_response['error']}")
@@ -261,10 +261,18 @@ def generate_legal(request):
     # Example AI response JSON structure we expect: 
     # {'title': '...', 'facts': '...', 'legal_analysis': '...', 'conclusion': '...'}
     
-    title = ai_response.get('title', f"Legal Report - {case.case_no}")
+    title = str(ai_response.get('title', f"Legal Report - {case.case_no}"))
     facts = ai_response.get('facts', case.description)
+    if isinstance(facts, dict): facts = json.dumps(facts, indent=2)
+    else: facts = str(facts)
+    
     law = ai_response.get('legal_analysis', 'Awaiting full AI analysis.')
+    if isinstance(law, dict): law = json.dumps(law, indent=2)
+    else: law = str(law)
+    
     conclusion = ai_response.get('conclusion', 'Investigation ongoing.')
+    if isinstance(conclusion, dict): conclusion = json.dumps(conclusion, indent=2)
+    else: conclusion = str(conclusion)
     
     # Save the draft history 
     draft = LegalDraft.objects.create(

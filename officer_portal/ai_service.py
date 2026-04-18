@@ -1,158 +1,110 @@
-from gradio_client import Client, handle_file
 import os
-import logging
 import json
-import time
-import concurrent.futures
+import logging
+from huggingface_hub import InferenceClient
 
 logger = logging.getLogger(__name__)
 
-# CONFIGURATION
+# --- CONFIGURATION ---
 HF_TOKEN = os.getenv("HF_API_TOKEN")
-# [CRITICAL] Your specific Space URL
-SPACE_URL = os.getenv("TRINETRA_AI_NODE", "https://vverma4436-legal-log-engine.hf.space/")
-
-# Azure's load-balancer kills any HTTP connection after 230 seconds.
-# We set our own timeout LOWER so Django can send a friendly error before Azure hard-kills the socket.
-AI_TIMEOUT_SECONDS = 180
-
-# Retry configuration
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 2  # seconds — exponential: 2s, 4s, 8s
-
-# Cache the client instance to avoid reconnecting on every request.
-# The Gradio Client handles its own internal connection pooling.
-_cached_client = None
-_client_lock = __import__('threading').Lock()
+MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
 
 
-def get_ai_client(force_new=False):
-    """
-    Returns a cached Gradio Client instance. Thread-safe.
-    If the client is stale or broken, pass force_new=True to create a fresh one.
-    """
-    global _cached_client
+def _get_client():
     if not HF_TOKEN:
-         logger.error("HF_API_TOKEN is missing in .env")
-         raise ValueError("HF_API_TOKEN not configured.")
-    
-    with _client_lock:
-        if _cached_client is None or force_new:
-            try:
-                logger.info(f"Creating new AI client connection to {SPACE_URL}")
-                _cached_client = Client(SPACE_URL, hf_token=HF_TOKEN, max_workers=1)
-            except Exception as e:
-                logger.error(f"Failed to connect to AI Client: {e}")
-                _cached_client = None
-                raise e
-        return _cached_client
+        raise ValueError("HF_API_TOKEN is missing in .env")
+    return InferenceClient(model=MODEL_ID, token=HF_TOKEN)
 
 
-def _retry_predict(predict_fn, *args, **kwargs):
-    """
-    Wraps a predict call with exponential backoff retry logic.
-    Handles transient HF Space errors (502, 503, cold starts).
-    """
-    last_error = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            return predict_fn(*args, **kwargs)
-        except Exception as e:
-            last_error = e
-            error_str = str(e).lower()
-            
-            # Don't retry on permanent errors (auth, not found, etc.)
-            if any(perm in error_str for perm in ['401', '403', '404', 'not found', 'unauthorized']):
-                logger.error(f"AI call failed with permanent error (attempt {attempt}): {e}")
-                raise e
-            
-            if attempt < MAX_RETRIES:
-                delay = RETRY_BASE_DELAY ** attempt  # 2s, 4s, 8s
-                logger.warning(
-                    f"AI call failed (attempt {attempt}/{MAX_RETRIES}), "
-                    f"retrying in {delay}s — Error: {e}"
-                )
-                time.sleep(delay)
-                # Force a fresh client on retry in case the connection is stale
-                get_ai_client(force_new=True)
-            else:
-                logger.error(f"AI call failed after {MAX_RETRIES} attempts: {e}")
-    
-    raise last_error
-
-
-def _do_analyze(case_id, question, file_input):
-    """Inner function that does the actual HF call, run inside a timed thread."""
-    client = get_ai_client()
-    return client.predict(
-        case_no=case_id,
-        file_obj=file_input,
-        user_q=question,
-        api_name="/analyze_logs"
-    )
-
-# --- ENDPOINT 1: ANALYZE LOGS ---
+# --- ENDPOINT 1: ANALYZE LOGS (used by WORMHOLE / AI Lab chat) ---
 def analyze_logs(case_id, question, log_file_path=None):
+    """
+    Sends a cyber forensics question to the Llama API and returns the response text.
+    File content is embedded in the prompt if provided.
+    """
     try:
-        file_input = None
-        if log_file_path:
-            file_input = handle_file(log_file_path)
+        client = _get_client()
 
-        # Wrap in a thread with a hard timeout so we never exceed Azure's 230s proxy limit
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                _retry_predict, _do_analyze, case_id, question, file_input
-            )
+        system_msg = (
+            "You are Trinetra, an elite AI cyber forensics analyst. "
+            "Provide detailed, professional analysis. Be concise but thorough."
+        )
+
+        user_content = f"Case ID: {case_id}\n\nQuery: {question}"
+
+        # If a log file was uploaded, read its content and include it
+        if log_file_path and os.path.exists(log_file_path):
             try:
-                result = future.result(timeout=AI_TIMEOUT_SECONDS)
-                return result
-            except concurrent.futures.TimeoutError:
-                logger.warning(f"AI timeout after {AI_TIMEOUT_SECONDS}s - HF Space may be waking up.")
-                return (
-                    "⏳ **Trinetra AI is waking up from sleep.** "
-                    "Please wait 60 seconds and send your message again. "
-                    "The model needs time to initialize on first contact."
-                )
+                with open(log_file_path, "r", errors="ignore") as f:
+                    file_content = f.read(8000)  # Limit to 8KB to stay within token limits
+                user_content += f"\n\nAttached Log File Content:\n```\n{file_content}\n```"
+            except Exception as fe:
+                logger.warning(f"Could not read log file: {fe}")
+
+        messages = [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_content},
+        ]
+
+        logger.info(f"[AI] Analyzing case {case_id} via InferenceClient API...")
+        response = client.chat_completion(messages, max_tokens=1024)
+        result = response.choices[0].message.content.strip()
+        logger.info(f"[AI] Analysis complete for case {case_id}.")
+        return result
+
     except Exception as e:
-        logger.error(f"AI Analysis Error: {e}")
-        return f"Error connecting to AI Node: {str(e)}"
+        logger.error(f"[AI] analyze_logs error: {e}")
+        return f"⚠️ AI Error: {str(e)}"
 
-def _do_legal(case_id, facts):
-    """Inner function for legal drafting, run inside a timed thread."""
-    client = get_ai_client()
-    return client.predict(
-        case_no=case_id,
-        user_instruction=facts,
-        api_name="/draft_legal_json"
-    )
 
-# --- ENDPOINT 2: LEGAL DRAFTER ---
+# --- ENDPOINT 2: LEGAL DRAFTER (used by LEGAL WRITE >> PDF button) ---
 def generate_legal_doc(case_id, facts):
+    """
+    Asks the Llama API to generate a structured legal document as JSON.
+    Returns a dict with keys: title, facts, legal_analysis, conclusion.
+    """
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                _retry_predict, _do_legal, case_id, facts
-            )
-            try:
-                json_str = future.result(timeout=AI_TIMEOUT_SECONDS)
-            except concurrent.futures.TimeoutError:
-                logger.warning("Legal doc AI timeout.")
-                return {
-                    "title": f"Timeout - Case {case_id}",
-                    "facts": "AI is initializing. Please retry in 60 seconds.",
-                    "legal_analysis": "The Hugging Face model is waking from sleep.",
-                    "conclusion": "Retry required."
-                }
+        client = _get_client()
+
+        system_msg = (
+            "You are a legal AI assistant specializing in cyber crime law. "
+            "You must respond ONLY with a valid JSON object. No markdown, no explanation. "
+            "The JSON must have exactly these keys: 'title', 'facts', 'legal_analysis', 'conclusion'."
+        )
+
+        user_msg = (
+            f"Draft a formal legal summary document for Case ID: {case_id}.\n"
+            f"Case Details: {facts}\n\n"
+            "Respond with only valid JSON."
+        )
+
+        messages = [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
+        ]
+
+        logger.info(f"[AI] Generating legal doc for case {case_id} via InferenceClient API...")
+        response = client.chat_completion(messages, max_tokens=800)
+        raw = response.choices[0].message.content.strip()
+        logger.info(f"[AI] Legal doc generation complete for case {case_id}.")
+
+        # Strip markdown code fences if the model added them
+        if raw.startswith("```json"):
+            raw = raw[7:].rstrip("`").strip()
+        elif raw.startswith("```"):
+            raw = raw[3:].rstrip("`").strip()
+
         try:
-            return json.loads(json_str)
+            return json.loads(raw)
         except json.JSONDecodeError:
-            logger.warning("AI returned malformed JSON. Falling back to raw text.")
+            logger.warning(f"[AI] JSON parse failed, wrapping raw text. Raw: {raw[:200]}")
             return {
-                "title": f"Raw Draft - Case {case_id}",
-                "facts": "AI output could not be formatted correctly. Raw text below:",
-                "legal_analysis": json_str,
-                "conclusion": "Manual review required."
+                "title": f"Legal Report - Case {case_id}",
+                "facts": facts,
+                "legal_analysis": raw,
+                "conclusion": "Generated via AI. Manual review recommended."
             }
+
     except Exception as e:
-        logger.error(f"AI Legal Doc Error: {e}")
+        logger.error(f"[AI] generate_legal_doc error: {e}")
         return {"error": str(e)}
