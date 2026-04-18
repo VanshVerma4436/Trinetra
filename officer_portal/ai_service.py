@@ -47,7 +47,8 @@ def analyze_logs(case_id, question, log_file_path=None):
         ]
 
         logger.info(f"[AI] Analyzing case {case_id} via InferenceClient API...")
-        response = client.chat_completion(messages, max_tokens=1024)
+        # Add a timeout to the client call to avoid hanging
+        response = client.chat_completion(messages, max_tokens=500) 
         result = response.choices[0].message.content.strip()
         logger.info(f"[AI] Analysis complete for case {case_id}.")
         return result
@@ -84,7 +85,7 @@ def generate_legal_doc(case_id, facts):
         ]
 
         logger.info(f"[AI] Generating legal doc for case {case_id} via InferenceClient API...")
-        response = client.chat_completion(messages, max_tokens=800)
+        response = client.chat_completion(messages, max_tokens=600)
         raw = response.choices[0].message.content.strip()
         logger.info(f"[AI] Legal doc generation complete for case {case_id}.")
 
