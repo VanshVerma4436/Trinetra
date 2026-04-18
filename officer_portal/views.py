@@ -167,16 +167,8 @@ def ai_chat_endpoint(request):
                 # Store result in DB so any worker can read it
                 AITask.objects.filter(task_id=task_id).update(status='done', response=ai_reply)
             except Exception as e:
-                logger.error(f"Background AI Error: {e}", exc_info=True)
-                # [PRODUCTION FIX] Always mark task as done (with error) so the
-                # client doesn't poll forever on a crashed task.
-                try:
-                    AITask.objects.filter(task_id=task_id).update(
-                        status='done',
-                        response=f"System Error: {str(e)}"
-                    )
-                except Exception as db_err:
-                    logger.error(f"Failed to update AITask status after error: {db_err}")
+                logger.error(f"Background AI Error: {e}")
+                AITask.objects.filter(task_id=task_id).update(status='done', response=f"System Error: {str(e)}")
             finally:
                 if temp_path and os.path.exists(temp_path):
                     os.remove(temp_path)
@@ -188,7 +180,7 @@ def ai_chat_endpoint(request):
         return JsonResponse({'task_id': task_id, 'status': 'pending'})
 
     except Exception as e:
-        logger.error(f"Chat Dispatch Error: {e}", exc_info=True)
+        logger.error(f"Chat Dispatch Error: {e}")
         return JsonResponse({'response': f"System Error: {str(e)}"}, status=500)
 
 
@@ -204,17 +196,6 @@ def ai_task_status(request, task_id):
             response_text = task.response
             task.delete()  # Clean up after delivering
             return JsonResponse({'status': 'done', 'response': response_text})
-        
-        # [PRODUCTION FIX] Auto-expire tasks stuck in 'pending' for over 10 minutes.
-        # This prevents infinite polling if the background thread crashed silently.
-        from datetime import timedelta
-        if task.created_at < timezone.now() - timedelta(minutes=10):
-            task.delete()
-            return JsonResponse({
-                'status': 'done',
-                'response': '⚠️ **Request Timed Out.** The AI processing took too long. Please try again.'
-            })
-        
         return JsonResponse({'status': 'pending'})
     except Exception as e:
         logger.error(f"Task poll error: {e}")

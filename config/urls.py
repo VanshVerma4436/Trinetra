@@ -3,12 +3,8 @@ from django.urls import path, include
 from django.views.generic import RedirectView
 from access_control.views import trap_login, root_routing_view
 from officer_portal.views import AdminLoginOverrideView
-from config.health import health_check
 
 urlpatterns = [
-    # Health Check (Azure probes + monitoring)
-    path('health/', health_check, name='health_check'),
-
     # Root Routing: Smart Redirect based on Client IP
     path('', root_routing_view, name='root_redirect'),
 

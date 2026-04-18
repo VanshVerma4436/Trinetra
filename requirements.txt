@@ -1,4 +1,4 @@
-django>=4.2,<5.0
+django
 django-ipware
 webauthn
 gunicorn==21.2.0
@@ -9,3 +9,7 @@ requests
 gradio_client>=1.3.0
 python-dotenv
 reportlab
+gradio_client>=0.8.0
+psycopg2-binary
+dj-database-url
+whitenoise
